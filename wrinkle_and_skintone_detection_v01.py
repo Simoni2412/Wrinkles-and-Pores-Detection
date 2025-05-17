@@ -87,8 +87,8 @@ class GuardioUI(QWidget):
 
         # Preview area
         self.video_label = QLabel(self)
-        self.video_label.setMinimumSize(800, 680)
-        self.video_label.setMaximumSize(800, 680)
+        self.video_label.setMinimumSize(1000, 680)
+        self.video_label.setMaximumSize(1000, 680)
         self.video_label.setStyleSheet("QLabel { background-color: black; }")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.video_label)
@@ -152,12 +152,14 @@ class GuardioUI(QWidget):
         self.setLayout(self.layout)
         
         # Set a fixed size for the window
-        self.setFixedSize(800, 680)
+        self.setFixedSize(1000, 680)
 
     def start_camera(self):
         """Toggle camera on/off"""
         if self.cap is None:
             self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1000)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 680)
             self.timer.start(30)
             self.start_camera_button.setText("Stop Camera")
             self.capture_button.setEnabled(True)
@@ -208,7 +210,7 @@ class GuardioUI(QWidget):
 
         ret, frame = self.cap.read()
         if ret:
-            frame = cv2.resize(frame, (640, 480))
+            frame = cv2.resize(frame, (1000, 680))
             faces = self.detect_face(frame)
             
             if len(faces) > 0 and self.validate_conditions(frame, faces):
@@ -279,7 +281,7 @@ class GuardioUI(QWidget):
             # display_image = self.overlay_u_zone(display_image)[0]  # Get the overlay image
             
             # Resize for display while maintaining aspect ratio
-            display_size = (640, 480)
+            display_size = (1000, 680)
             h, w = display_image.shape[:2]
             scale = min(display_size[0]/w, display_size[1]/h)
             new_size = (int(w*scale), int(h*scale))
@@ -463,6 +465,8 @@ class GuardioUI(QWidget):
         return min(int(age), 70)
 
     def analyze_wrinkles(self, image):
+        output_dir = 'output/predicted_masks'
+        os.makedirs(output_dir, exist_ok=True)
         if wrinkle_model is None:
             return "Wrinkle Analysis: Model not available"
             
@@ -473,12 +477,27 @@ class GuardioUI(QWidget):
                 predicted_mask = predicted_mask[0, ..., 0]
             else:
                 predicted_mask = predicted_mask[0]
-            binary_mask = (predicted_mask > 0.5).astype(np.uint8)
+            
+            binary_mask = (predicted_mask > 0.5).astype(np.uint8) 
+
+            # Determine original filename (e.g., uploaded_face_1234.jpg)
+             # Convert mask to uint8
+            if predicted_mask.dtype != np.uint8:
+                predicted_mask = (predicted_mask * 255).astype(np.uint8)
+
+            # Saving the predicted mask
+            original_filename = os.path.basename(self.captured_image)
+            filename_wo_ext = os.path.splitext(original_filename)[0]
+            mask_filename = f"{filename_wo_ext}_mask.png"
+            mask_path = os.path.join(output_dir, mask_filename)
+            cv2.imwrite(mask_path, predicted_mask)
+            print(f"Saved wrinkle mask to: {mask_path}")
+
             
             score = self.wrinkle_score(binary_mask)
             age = self.wrinkle_score_to_age(score)
             # print(cv2.imshow("Predicted Mask", predicted_mask))
-            return f"Wrinkle Score: {score:.1f}, Estimated Age: {age}", binary_mask
+            return f"Wrinkle Score: {score:.1f}, Estimated Skin Age: {age}", binary_mask
         except Exception as e:
             print(f"Error in wrinkle analysis: {str(e)}")
             return "Wrinkle Analysis: Error during processing"
@@ -499,7 +518,7 @@ class GuardioUI(QWidget):
 
         ret, frame = self.cap.read()
         if ret:
-            frame = cv2.resize(frame, (640, 480))
+            frame = cv2.resize(frame, (1000, 680))
             faces = self.detect_face(frame)
             validations_met = self.validate_conditions(frame, faces)
 
