@@ -11,6 +11,7 @@ from PyQt5.QtCore import QTimer, Qt
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+import matplotlib.pyplot as plt
 
 
 # === Mediapipe Setup ===
@@ -37,22 +38,67 @@ def combined_loss(y_true, y_pred):
     dsc = dice_loss(y_true, y_pred)
     return bce + dsc
 
+def channel_avg(x):
+    return tf.reduce_mean(x, axis=-1, keepdims=True)
+
+def channel_max(x):
+    return tf.reduce_max(x, axis=-1, keepdims=True)
+
+
+def spatial_attention(x):
+    avg_pool =  layers.Lambda(channel_avg)(x)
+    max_pool = layers.Lambda(channel_max)(x)
+    concat = layers.Concatenate(axis=-1)([avg_pool, max_pool])
+    attention = layers.Conv2D(1, kernel_size=7, padding='same', activation='sigmoid')(concat)
+    return layers.Multiply()([x, attention])
+
+
 # === Load Wrinkle Model ===
 #wrinkle_model = None
-MODEL_PATH = 'model_yesspatial_yesaugment_batch5.h5'
+MODEL_PATH = 'model_wrinkles_batch5.h5'
+custom_objects={
+        'channel_avg': channel_avg,
+        'channel_max': channel_max,
+        'spatial_attention': spatial_attention,  # if applicable
+        'dice_loss': dice_loss,
+        'combined_loss': combined_loss,
+        # add any other named functions
+    }
+
 
 try:
     if os.path.exists(MODEL_PATH):
         wrinkle_model = load_model(
             MODEL_PATH,
-            custom_objects={
-                'attention_block': attention_block,
-                'dice_loss': dice_loss,
-                'combined_loss': combined_loss
-            }
+            custom_objects= custom_objects
         )
 except Exception as e:
     print(f"Error loading wrinkle model: {str(e)}")
+
+# Dark Circle Model
+LEFT_EYE_IDXS = [
+    124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
+
+
+RIGHT_EYE_IDXS = [
+    463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463 # Right eye outer contour
+]
+# get_landmark_coords function remains as you provided it
+
+
+# === Load Skin Type Classifier Model ===
+SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
+
+try:
+    if os.path.exists(SKIN_TYPE_MODEL_PATH):
+        skin_type_model = load_model(SKIN_TYPE_MODEL_PATH)
+    else:
+        skin_type_model = None
+except Exception as e:
+    print(f"Error loading skin type model: {e}")
+    skin_type_model = None
+
+
 
 # U-zone indices (cheeks + jawline)
 u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397,
@@ -97,6 +143,14 @@ class GuardioUI(QWidget):
         self.skin_label = QLabel("Skin Tone: Not analyzed", self)
         self.skin_label.setStyleSheet("QLabel{font-size: 16px}")
         self.layout.addWidget(self.skin_label)
+
+        self.skin_type_label = QLabel("Skin Type: Not analyzed", self)
+        self.skin_type_label.setStyleSheet("QLabel{font-size: 16px}")
+        self.layout.addWidget(self.skin_type_label)
+
+        self.dark_circle_label = QLabel("Dark Circle Score: Not analyzed", self)
+        self.dark_circle_label.setStyleSheet("QLabel{font-size: 16px}")
+        self.layout.addWidget(self.dark_circle_label)
 
         self.wrinkle_label = QLabel("Wrinkle Analysis: Not analyzed", self)
         self.wrinkle_label.setStyleSheet("QLabel{font-size:16px}")
@@ -165,6 +219,7 @@ class GuardioUI(QWidget):
             self.capture_button.setEnabled(True)
             # Clear any previous analysis results
             self.skin_label.setText("Skin Tone: Not analyzed")
+            self.skin_type_label.setText("Skin Type: Not analyzed")
             self.wrinkle_label.setText("Wrinkle Analysis: Not analyzed")
         else:
             self.stop_camera()
@@ -259,6 +314,7 @@ class GuardioUI(QWidget):
         try:
             # First analyze skin tone
             self.detect_skin_tone(self.captured_image)
+            # self.skin_label.setText(skin_tone_result)
             
             # Load the image for display
             image = cv2.imread(self.captured_image)
@@ -279,7 +335,16 @@ class GuardioUI(QWidget):
             
             # Add skin tone overlay
             # display_image = self.overlay_u_zone(display_image)[0]  # Get the overlay image
-            
+            # === Run skin type patch-based analysis ===
+            skin_type_result = self.analyze_skin_type_patches(self.captured_image)
+            self.skin_type_label.setText(skin_type_result)
+
+
+
+            # === Run dark circle detection ===
+            original_img, dark_circle_mask, score = self.detect_dark_circles_otsu(self.captured_image)
+            self.dark_circle_label.setText(f"Dark Circle Score: {int(score)}")
+
             # Resize for display while maintaining aspect ratio
             display_size = (1000, 680)
             h, w = display_image.shape[:2]
@@ -502,6 +567,59 @@ class GuardioUI(QWidget):
             print(f"Error in wrinkle analysis: {str(e)}")
             return "Wrinkle Analysis: Error during processing"
 
+
+    def analyze_skin_type_patches(self, image_path):
+        if skin_type_model is None:
+            return "Skin Type Model: Not available"
+
+        from PIL import Image
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image = image.resize((520, 520))
+            image_array = np.array(image)
+
+            patch_size = (260, 260)
+            stride = 130
+            h, w = image_array.shape[:2]
+            patch_predictions = []
+
+            for y in range(0, h, stride):
+                for x in range(0, w, stride):
+                    patch = image_array[y:y+patch_size[0], x:x+patch_size[1]]
+                    if patch.shape[0] != patch_size[0] or patch.shape[1] != patch_size[1]:
+                        continue
+                    patch_preprocessed = tf.keras.applications.efficientnet_v2.preprocess_input(patch)
+                    patch_preprocessed = np.expand_dims(patch_preprocessed, axis=0)
+                    pred = skin_type_model.predict(patch_preprocessed, verbose=0)
+                    pred_class = np.argmax(pred)
+                    patch_predictions.append(pred_class)
+
+            if not patch_predictions:
+                return "Skin Type: Unable to predict (no valid patches)"
+
+            unique, counts = np.unique(patch_predictions, return_counts=True)
+            vote_result = dict(zip(unique, counts))
+            total = sum(counts)
+            class_labels = {0: 'Dry', 1: 'Normal', 2: 'Oily'}
+            majority_class = max(vote_result, key=vote_result.get)
+            dominant_type = class_labels[majority_class]
+
+            # Detect combination skin type
+            threshold_percent = 25
+            combined_types = [class_labels[cls] for cls, cnt in vote_result.items() if (cnt / total) * 100 >= threshold_percent]
+
+            if len(combined_types) > 1:
+                return f"Skin Type: Combination ({', '.join(combined_types)})"
+            else:
+                return f"Skin Type: {dominant_type}"
+
+        except Exception as e:
+            print(f"Error during patch-based skin type analysis: {e}")
+            return "Skin Type: Analysis error"
+
     def draw_guide(self, frame, validations_met):
         height, width = frame.shape[:2]
         center_x, center_y = width // 2, height // 2
@@ -542,6 +660,157 @@ class GuardioUI(QWidget):
             qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             self.video_label.setPixmap(QPixmap.fromImage(qt_image))
 
+    def get_landmark_coords(self,image, landmarks, indexes):
+        """Extracts pixel coordinates for given landmark indexes."""
+        h, w = image.shape[:2]
+        # Ensure indexes are within bounds
+        valid_indexes = [i for i in indexes if i is not None and 0 <= i < len(landmarks)]
+        return np.array([(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in valid_indexes], np.int32)
+
+
+    
+    def different_zones(self,image, landmarks):
+        """ Generate segmented facial region masks and segments for left/right eyes """
+        h, w = image.shape[:2]
+
+        # Convert landmark coordinates to pixel positions
+        left_eye_pts = self.get_landmark_coords(image, landmarks.landmark, LEFT_EYE_IDXS)
+        right_eye_pts = self.get_landmark_coords(image, landmarks.landmark, RIGHT_EYE_IDXS)
+
+        # Initialize blank masks for each region (size of original image)
+        left_eye_mask_full = np.zeros((h, w), dtype=np.uint8)
+        right_eye_mask_full = np.zeros((h, w), dtype=np.uint8)
+
+        # Fill masks with corresponding regions (using 255 for filled area)
+        if left_eye_pts.size > 0:
+            cv2.fillPoly(left_eye_mask_full, [np.array(left_eye_pts, dtype=np.int32)], 255)  # Left eye region
+        if right_eye_pts.size > 0:
+            cv2.fillPoly(right_eye_mask_full, [np.array(right_eye_pts, dtype=np.int32)], 255)  # Right eye region
+
+        # Extract segmented images using individual masks (size of original image)
+        left_eye_segment = cv2.bitwise_and(image, image, mask=left_eye_mask_full)
+        right_eye_segment = cv2.bitwise_and(image, image, mask=right_eye_mask_full)
+
+        # Also return the filled masks for later use in scoring/combining
+        return left_eye_segment, right_eye_segment, left_eye_mask_full, right_eye_mask_full
+    
+    
+    def detect_dark_circles_otsu(self,image):
+        """
+        Detects dark circles in the left and right eye regions separately
+        using landmark-based segmentation and Otsu's thresholding.
+
+        Args:
+            image_path (str): Path to the input image file.
+
+        Returns:
+            Tuple: (original_image, combined_dark_circle_mask_full_size, dark_circle_score).
+                Returns (None, None, None) if face or eye region detection fails.
+        """
+
+        # Read the image
+        original_image = cv2.imread(image)
+
+        if original_image is None:
+            print(f"Error: Could not read image file at path: {image}")
+            return None, None, None
+
+        # Convert to RGB for MediaPipe
+        rgb_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
+        h_orig, w_orig = original_image.shape[:2]
+
+        # --- Initialize and use FaceMesh directly within this function ---
+        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
+            results = face_mesh.process(rgb_image)
+
+        if not results.multi_face_landmarks:
+            print(f"No face detected in {image}.")
+            return original_image, np.zeros((h_orig, w_orig), dtype=np.uint8), 0.0 # Return original image and empty mask
+
+        landmarks = results.multi_face_landmarks[0]
+
+        # Get segmented eye regions (same size as original image) and the masks
+        left_segment, right_segment, left_eye_mask_full, right_eye_mask_full = self.different_zones(original_image, landmarks)
+
+        # Initialize masks for detected dark circles (full size)
+        left_dark_circle_mask_full_size = np.zeros((h_orig, w_orig), dtype=np.uint8)
+        right_dark_circle_mask_full_size = np.zeros((h_orig, w_orig), dtype=np.uint8)
+
+
+        # Process Left Eye Segment
+        if left_segment.shape[0] > 0 and left_segment.shape[1] > 0 and np.max(left_segment) > 0: # Check if segment is valid and not all black
+            gray_left_eye = cv2.cvtColor(left_segment, cv2.COLOR_BGR2GRAY)
+
+            # Apply Gaussian blur (check kernel size)
+            ksize = (7, 7) # Must be odd
+            if gray_left_eye.shape[0] >= ksize[0] and gray_left_eye.shape[1] >= ksize[1]:
+                blurred_left_eye = cv2.GaussianBlur(gray_left_eye, ksize, 0)
+            else:
+                print(f"Left eye segment size too small for blur kernel {ksize} in {image_path}.")
+                blurred_left_eye = gray_left_eye # Skip blur if too small
+
+            # Apply Otsu's thresholding to the left eye segment
+            try:
+                # THRESH_BINARY_INV might be better if dark circles are lower intensity
+                ret_left, thresh_left = cv2.threshold(blurred_left_eye, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU) # Removed + cv2.THRESH_OTSU
+                # You might need to invert if dark circles appear as 0
+                # ret_left, thresh_left = cv2.threshold(blurred_left_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                left_dark_circle_mask_full_size = thresh_left # This mask is already full size
+            except cv2.error as e:
+                print(f"Error during left eye thresholding for {image_path}: {e}")
+
+
+        # Process Right Eye Segment
+        if right_segment.shape[0] > 0 and right_segment.shape[1] > 0 and np.max(right_segment) > 0: # Check if segment is valid and not all black
+            gray_right_eye = cv2.cvtColor(right_segment, cv2.COLOR_BGR2GRAY)
+
+            # Apply Gaussian blur (check kernel size)
+            ksize = (7, 7) # Must be odd
+            if gray_right_eye.shape[0] >= ksize[0] and gray_right_eye.shape[1] >= ksize[1]:
+                blurred_right_eye = cv2.GaussianBlur(gray_right_eye, ksize, 0)
+            else:
+                print(f"Right eye segment size too small for blur kernel {ksize} in {image_path}.")
+                blurred_right_eye = gray_right_eye # Skip blur if too small
+
+            # Apply Otsu's thresholding to the right eye segment
+            try:
+                # THRESH_BINARY_INV might be better if dark circles are lower intensity
+                ret_right, thresh_right = cv2.threshold(blurred_right_eye, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU) # Removed + cv2.THRESH_OTSU
+                # You might need to invert if dark circles appear as 0
+                # ret_right, thresh_right = cv2.threshold(blurred_right_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                right_dark_circle_mask_full_size = thresh_right # This mask is already full size
+            except cv2.error as e:
+                print(f"Error during right eye thresholding for {image_path}: {e}")
+
+
+        # Combine the left and right dark circle masks (full size)
+        # Use bitwise_or to combine the binary masks
+        combined_dark_circle_mask_full_size = cv2.bitwise_or(left_dark_circle_mask_full_size, right_dark_circle_mask_full_size)
+
+        # --- Optional: Refine the combined mask ---
+        # Apply morphological operations to clean up the mask (e.g., remove small noise)
+        kernel = np.ones((3, 3), np.uint8)
+        combined_dark_circle_mask_full_size = cv2.morphologyEx(combined_dark_circle_mask_full_size, cv2.MORPH_OPEN, kernel) # Opening to remove small objects
+
+        # --- Calculate Dark Circle Score ---
+        # A simple score can be based on the proportion of detected dark circle pixels
+        # within the total eye region area.
+        total_eye_region_mask = cv2.bitwise_or(left_eye_mask_full, right_eye_mask_full) # Combine the original eye region masks
+        total_eye_pixel_count = np.sum(total_eye_region_mask > 0) # Count non-zero pixels in the eye region mask
+
+        dark_circle_pixel_count = np.sum(combined_dark_circle_mask_full_size > 0) # Count non-zero pixels in the dark circle mask
+
+        dark_circle_score = 0.0
+        if total_eye_pixel_count > 0:
+            dark_circle_score = (dark_circle_pixel_count / total_eye_pixel_count) * 100 # Score as percentage of eye area
+
+        # You could refine the score calculation, e.g., consider intensity within the dark circle mask on the original image.
+        # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
+        # A lower intensity might indicate more severe dark circles. You could incorporate this.
+
+        return original_image, combined_dark_circle_mask_full_size, dark_circle_score
+    
+    
     def upload_photo(self):
         """Handle photo upload from file system"""
         print("Starting photo upload...")
