@@ -1,4 +1,5 @@
 from PIL import Image
+import pillow_heif
 import numpy as np
 import cv2
 import random
@@ -8,6 +9,7 @@ from tensorflow.keras.models import load_model
 import matplotlib.pyplot as plt
 import os
 import sys
+
 
 # === Custom Loss Functions for Wrinkle Model ===
 def attention_block(x, g, inter_channels):
@@ -67,21 +69,63 @@ face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1)
 # === Face Detector ===
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-
 # === Dark Circle Model ===
 LEFT_EYE_IDXS = [124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
 RIGHT_EYE_IDXS = [463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463] # Right eye outer contour
 u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92, 57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
 
 
+# For supporting HEIC image format
+pillow_heif.register_heif_opener()
+
 print("Succesfully entered the analyzer file")
+
+
+
+def load_and_convert_image(image_input):
+    """
+    Converts image_input into an OpenCV-compatible BGR NumPy array.
+    Accepts:
+        - File path (str, including .jpg, .png, .heic, etc.)
+        - PIL.Image.Image
+        - NumPy array
+    Returns:
+        - BGR NumPy array (OpenCV style)
+    """
+
+    if isinstance(image_input, str):
+        try:
+            try:
+                image = Image.open(io.BytesIO(contents)).convert("RGB")
+                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                logger.error(f"Failed to open image: {e}")
+                return jsonify({"error": "Unsupported or corrupt image file."}), 400
+        except Exception as e:
+            raise ValueError(f"Failed to load image from path '{image_input}': {e}")
+
+    elif isinstance(image_input, Image.Image):
+        return cv2.cvtColor(np.array(image_input.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif isinstance(image_input, np.ndarray):
+        if image_input.ndim == 2:
+            return cv2.cvtColor(image_input, cv2.COLOR_GRAY2BGR)
+        elif image_input.shape[2] == 3:
+            return image_input  # Already BGR
+        elif image_input.shape[2] == 4:
+            return cv2.cvtColor(image_input, cv2.COLOR_BGRA2BGR)
+        else:
+            raise ValueError("Unsupported image array format.")
+
+    else:
+        raise TypeError("Unsupported image input. Provide file path, PIL.Image, or NumPy array.")
 
     
 def detect_face(frame):
         print("Succesfully entered the detect face function")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-        print("Leaving the detect face function")
+        print("Leaving the detect face function")   
         return faces
 
 def crop_to_face(frame, face):
@@ -227,6 +271,7 @@ def wrinkle_score_to_age(score, min_age=20, max_age=80):
 def analyze_wrinkles(image):
         print("Entering the analyze wrinkle function")
         output_dir = 'output/predicted_masks'
+        image = load_and_convert_image(image)
         os.makedirs(output_dir, exist_ok=True)
         if wrinkle_model is None:
             return {"wrinkle_score": None, "estimated_age": None, "message": "Wrinkle model not available"}
@@ -278,8 +323,7 @@ def detect_skin_tone(image):
         results = face_mesh.process(rgb_image)
 
         if not results.multi_face_landmarks:
-            skin_label.setText("No face detected.")
-            return
+            return "No face detected."
 
         landmarks = results.multi_face_landmarks[0]
         u_points = [(int(landmarks.landmark[i].x * w), int(landmarks.landmark[i].y * h)) for i in u_zone_indices]
