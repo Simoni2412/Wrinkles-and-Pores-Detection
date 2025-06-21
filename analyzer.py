@@ -5,6 +5,7 @@ import random
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 import os
 import sys
@@ -29,9 +30,24 @@ def combined_loss(y_true, y_pred):
     dsc = dice_loss(y_true, y_pred)
     return bce + dsc
 
+def channel_avg(x):
+    return tf.reduce_mean(x, axis=-1, keepdims=True)
+
+def channel_max(x):
+    return tf.reduce_max(x, axis=-1, keepdims=True)
+
+
+def spatial_attention(x):
+    avg_pool =  layers.Lambda(channel_avg)(x)
+    max_pool = layers.Lambda(channel_max)(x)
+    concat = layers.Concatenate(axis=-1)([avg_pool, max_pool])
+    attention = layers.Conv2D(1, kernel_size=7, padding='same', activation='sigmoid')(concat)
+    return layers.Multiply()([x, attention])
+
 # === Load Models ===
 WRINKLE_MODEL_PATH = 'model_yesspatial_yesaugment_batch5_v01.h5'
 SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
+PORES_MODEL_PATH = "model_pores_batch3.h5"
 
 def load_wrinkle_model():
     if os.path.exists(WRINKLE_MODEL_PATH):
@@ -56,9 +72,27 @@ def load_skin_type_model():
             print(f"Error loading skin type model: {e}")
     return None
 
+def load_pores_model():
+    if os.path.exists(PORES_MODEL_PATH):
+        try:
+            return load_model(
+                PORES_MODEL_PATH,
+                custom_objects={
+                    'channel_avg': channel_avg,
+                    'channel_max': channel_max,
+                    'spatial_attention': spatial_attention,  # if applicable
+                    'dice_loss': dice_loss,
+                    'combined_loss': combined_loss,
+                }
+            )
+        except Exception as e:
+            print(f"Error loading wrinkle model: {str(e)}")
+    return None
+
 
 wrinkle_model = load_wrinkle_model()
 skin_type_model = load_skin_type_model()
+pores_model = load_pores_model()
 
 # === Mediapipe Setup ===
 mp_face_mesh = mp.solutions.face_mesh
@@ -69,14 +103,26 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_fronta
 
 
 # === Dark Circle Model ===
-LEFT_EYE_IDXS = [124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
-RIGHT_EYE_IDXS = [463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463] # Right eye outer contour
-u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92, 57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
+LEFT_EYE_IDXS = [
+    35, 226, 25, 110, 24, 23, 154, 243, 112, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
 
+RIGHT_EYE_IDXS = [
+    463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 255, 339, 254, 253, 381# Right eye outer contour
+]
+
+# Butterfly indices for pores model
+BUTTERFLY_ZONE_INDICES = [111, 117, 119, 120, 121, 128, 122, 6, 351, 357, 350, 349, 348, 347, 346, 345, 352, 376, 433, 416,
+                          434, 432, 410, 423, 278, 344, 440, 275, 4, 45, 220, 115, 48, 203, 186, 186, 212, 214, 192, 123, 116]
+
+#U zone indices for Skin Type model
+u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152,
+                  148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92,
+                  57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
+
+IMG_SIZE = (256, 256)
 
 print("Succesfully entered the analyzer file")
 
-    
 def detect_face(frame):
         print("Succesfully entered the detect face function")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -109,6 +155,13 @@ def crop_to_face(frame, face):
             x2 = min(width, x2 + diff//2)
         print("Leaving the crop face function")
         return frame[y1:y2, x1:x2]
+
+def detect_landmarks(image):
+    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
+        results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        if results.multi_face_landmarks:
+            return results.multi_face_landmarks[0]
+    return None
 
 def get_landmark_coords(image, landmarks, indexes):
         """Extracts pixel coordinates for given landmark indexes."""
@@ -481,4 +534,61 @@ def detect_dark_circles_otsu(image):
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
         print("exiting the dark circle function")
         return original_image, combined_dark_circle_mask_full_size, dark_circle_score
-    
+
+def crop_to_butterfly_zone(image, landmarks, indices):
+    h, w = image.shape[:2]
+    butterfly_pts = get_landmark_coords(image, landmarks, indices)
+    if butterfly_pts.size == 0:
+        return None, None
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [butterfly_pts], 255)
+    ys, xs = np.where(mask > 0)
+    y_min, y_max = ys.min(), ys.max()
+    x_min, x_max = xs.min(), xs.max()
+    cropped_image = image[y_min:y_max, x_min:x_max]
+    bbox = (x_min, y_min, x_max, y_max)
+    return cropped_image, bbox
+
+def calculate_pores_score(pred_mask, threshold=0.2):
+    """
+    Calculates a pores score out of 100, where higher is better (fewer pores).
+    """
+    pores_mask = (pred_mask > threshold).astype(np.uint8)
+    pore_pixel_count = np.sum(pores_mask)
+    total_pixel_count = pores_mask.size
+    pore_fraction = pore_pixel_count / total_pixel_count
+    pores_score = (1 - pore_fraction) * 100
+    return f" Pores  Score: {pores_score:.1f}"
+
+def analyze_pores(image):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    landmark = detect_landmarks(image)
+    cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
+    img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    normalized = enhanced.astype(np.float32) / 255.0
+
+    # Convert to 3 channels
+    image = np.stack([normalized] * 3, axis=-1)
+
+    # img = np.expand_dims(img, axis=0)
+
+    # Ensure IMG_SIZE is a tuple of integers
+    image = cv2.resize(image, IMG_SIZE)
+    img = np.expand_dims(image, axis=0)
+
+    #cv2.imshow((image * 255).astype(np.uint8))
+    pred = pores_model.predict(img)
+    # If model output is (1, 256, 256, 1), squeeze to (256, 256)
+    if pred.shape[-1] == 1:
+        pred = pred[0, ..., 0]
+    else:
+        pred = pred[0]
+
+    pores_score = calculate_pores_score(pred)
+
+    return pred, cropped_img, bbox, pores_score
+
+
