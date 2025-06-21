@@ -8,6 +8,8 @@ from PyQt5.QtWidgets import (QApplication, QLabel, QPushButton, QVBoxLayout,
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import QTimer, Qt
 
+from tensorflow.keras import layers
+from PIL import Image
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
@@ -52,10 +54,17 @@ def spatial_attention(x):
     attention = layers.Conv2D(1, kernel_size=7, padding='same', activation='sigmoid')(concat)
     return layers.Multiply()([x, attention])
 
+# === Load Skin Type Classifier Model ===
+SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
+
+# === Load Pores Model ===
+PORES_MODEL_PATH = "model_pores_batch3.h5"
 
 # === Load Wrinkle Model ===
 #wrinkle_model = None
 MODEL_PATH = 'model_wrinkles_batch5.h5'
+
+#Custom objects needed to load the model
 custom_objects={
         'channel_avg': channel_avg,
         'channel_max': channel_max,
@@ -64,6 +73,24 @@ custom_objects={
         'combined_loss': combined_loss,
         # add any other named functions
     }
+
+try:
+    if os.path.exists(SKIN_TYPE_MODEL_PATH):
+        skin_type_model = load_model(SKIN_TYPE_MODEL_PATH)
+    else:
+        skin_type_model = None
+except Exception as e:
+    print(f"Error loading skin type model: {e}")
+    skin_type_model = None
+
+try:
+    if os.path.exists(PORES_MODEL_PATH):
+        pores_model = load_model(
+            PORES_MODEL_PATH,
+            custom_objects= custom_objects
+        )
+except Exception as e:
+    print(f"Error loading pores model: {str(e)}")
 
 
 try:
@@ -75,40 +102,26 @@ try:
 except Exception as e:
     print(f"Error loading wrinkle model: {str(e)}")
 
-# Dark Circle Model
+# IDark Circle Model
 LEFT_EYE_IDXS = [
     124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
-
 
 RIGHT_EYE_IDXS = [
     463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463 # Right eye outer contour
 ]
-# get_landmark_coords function remains as you provided it
 
+# Butterfly indices for pores model
+BUTTERFLY_ZONE_INDICES = [111, 117, 119, 120, 121, 128, 122, 6, 351, 357, 350, 349, 348, 347, 346, 345, 352, 376, 433, 416, 434, 432, 410, 423, 278, 344, 440, 275, 4, 45, 220, 115, 48, 203, 186, 186, 212, 214, 192, 123, 116]
 
-# === Load Skin Type Classifier Model ===
-SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
-
-try:
-    if os.path.exists(SKIN_TYPE_MODEL_PATH):
-        skin_type_model = load_model(SKIN_TYPE_MODEL_PATH)
-    else:
-        skin_type_model = None
-except Exception as e:
-    print(f"Error loading skin type model: {e}")
-    skin_type_model = None
-
-
-
-# U-zone indices (cheeks + jawline)
+# U-zone indices (cheeks + jawline) for skin type
 u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397,
                   365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 135, 192, 123, 116,
                   143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92, 57, 43, 106,
                   182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
 
+IMG_SIZE = (256, 256)
 # === Face Detector ===
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-
 
 class GuardioUI(QWidget):
     def __init__(self):
@@ -127,8 +140,15 @@ class GuardioUI(QWidget):
                 f"Wrinkle analysis model not found at {MODEL_PATH}. Only skin tone analysis will be available."
             )
 
+        if pores_model is None:
+            QMessageBox.warning(
+                self,
+                "Model Not Found",
+                f"Pores analysis model not found at {PORES_MODEL_PATH}. Only skin tone analysis will be available."
+            )
+
     def init_ui(self):
-        self.setWindowTitle("Wrinkle & Skintone Analysis")
+        self.setWindowTitle("Initial Skin Analysis")
         self.layout = QVBoxLayout()
 
         # Preview area
@@ -155,6 +175,10 @@ class GuardioUI(QWidget):
         self.wrinkle_label = QLabel("Wrinkle Analysis: Not analyzed", self)
         self.wrinkle_label.setStyleSheet("QLabel{font-size:16px}")
         self.layout.addWidget(self.wrinkle_label)
+
+        self.pores_label = QLabel("Pores Analysis: Not analyzed", self)
+        self.pores_label.setStyleSheet("QLabel{font-size:16px}")
+        self.layout.addWidget(self.pores_label)
 
         # Create horizontal layouts for button organization
         self.capture_layout = QHBoxLayout()
@@ -210,7 +234,9 @@ class GuardioUI(QWidget):
 
     def start_camera(self):
         """Toggle camera on/off"""
+        print("Start Camera")
         if self.cap is None:
+            print("Camera not started")
             self.cap = cv2.VideoCapture(0)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1000)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 680)
@@ -221,6 +247,7 @@ class GuardioUI(QWidget):
             self.skin_label.setText("Skin Tone: Not analyzed")
             self.skin_type_label.setText("Skin Type: Not analyzed")
             self.wrinkle_label.setText("Wrinkle Analysis: Not analyzed")
+            self.pores_label.setText("Pores Analysis: Not analyzed")
         else:
             self.stop_camera()
             self.start_camera_button.setText("Start Camera")
@@ -328,11 +355,21 @@ class GuardioUI(QWidget):
             if wrinkle_model is not None:
                 wrinkle_text, binary_mask = self.analyze_wrinkles(image)
                 self.wrinkle_label.setText(wrinkle_text)
-                
+
                 if binary_mask is not None:
                     # Create overlay with wrinkle detection
                     display_image = self.create_overlay(image, binary_mask)
-            
+
+            #Pores analysis
+            if pores_model is not None:
+                pred_mask, cropped_img, bbox = self.analyze_pores(image)
+                pred_score = self.calculate_pores_score(pred_mask)
+                self.pores_label.setText(pred_score)
+
+                if pred_mask is not None:
+                    # Create overlay with Pores detection
+                    display_pores_image = self.overlay_pores(image, pred_mask, bbox)
+
             # Add skin tone overlay
             # display_image = self.overlay_u_zone(display_image)[0]  # Get the overlay image
             # === Run skin type patch-based analysis ===
@@ -342,33 +379,73 @@ class GuardioUI(QWidget):
 
 
             # === Run dark circle detection ===
-            original_img, dark_circle_mask, score = self.detect_dark_circles_otsu(self.captured_image)
+            original_img, dark_circle_mask, score, dark_pixels_mask = self.detect_dark_circles_otsu(self.captured_image)
+            display_dark_circle_image = self.dark_circle_overlay(original_img, dark_pixels_mask)
             self.dark_circle_label.setText(f"Dark Circle Score: {int(score)}")
 
-            # Resize for display while maintaining aspect ratio
+            # # Resize for display while maintaining aspect ratio
+            # display_size = (1000, 680)
+            # h, w = display_image.shape[:2]
+            # scale = min(display_size[0]/w, display_size[1]/h)
+            # new_size = (int(w*scale), int(h*scale))
+            #
+            # # Resize image
+            # display_image = cv2.resize(display_image, new_size)
+            #
+            # # Convert to RGB for Qt
+            # display_image_rgb = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+            #
+            # # Convert to QImage
+            # h, w, ch = display_image_rgb.shape
+            # bytes_per_line = ch * w
+            # qt_image = QImage(display_image_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            #
+            # # Convert to pixmap and display
+            # pixmap = QPixmap.fromImage(qt_image)
+            #
+            # self.video_label.clear()
+            # self.video_label.setPixmap(pixmap)
+            # self.video_label.setAlignment(Qt.AlignCenter)
+            # self.video_label.repaint()
+            # Resize and prepare wrinkle overlay
             display_size = (1000, 680)
+
+            # --- Resize all overlays to same size ---
+            def resize_to_display(img, target_size):
+                h, w = img.shape[:2]
+                scale = min(target_size[0] / w, target_size[1] / h)
+                new_size = (int(w * scale), int(h * scale))
+                return cv2.resize(img, new_size)
+
+            display_image = resize_to_display(display_image, display_size)
+            display_pores_image = resize_to_display(display_pores_image, display_size)
+            display_dark_circle_image = resize_to_display(display_dark_circle_image, display_size)
+
+            # --- Match sizes exactly (in case of rounding mismatches) ---
             h, w = display_image.shape[:2]
-            scale = min(display_size[0]/w, display_size[1]/h)
-            new_size = (int(w*scale), int(h*scale))
-            
-            # Resize image
-            display_image = cv2.resize(display_image, new_size)
-            
-            # Convert to RGB for Qt
-            display_image_rgb = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
-            
-            # Convert to QImage
-            h, w, ch = display_image_rgb.shape
+            display_pores_image = cv2.resize(display_pores_image, (w, h))
+            display_dark_circle_image = cv2.resize(display_dark_circle_image, (w, h))
+
+            # --- Blend all overlays ---
+            combined = cv2.addWeighted(display_image, 0.6, display_pores_image, 0.3, 0)
+            combined = cv2.addWeighted(combined, 1.0, display_dark_circle_image, 0.3, 0)
+
+            # --- Convert to RGB for Qt ---
+            combined_rgb = cv2.cvtColor(combined, cv2.COLOR_BGR2RGB)
+
+            # --- Convert to QImage and show ---
+            h, w, ch = combined_rgb.shape
             bytes_per_line = ch * w
-            qt_image = QImage(display_image_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            
-            # Convert to pixmap and display
+            qt_image = QImage(combined_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
             pixmap = QPixmap.fromImage(qt_image)
             self.video_label.clear()
             self.video_label.setPixmap(pixmap)
             self.video_label.setAlignment(Qt.AlignCenter)
             self.video_label.repaint()
-                
+
+
+
         except Exception as e:
             print(f"Error during analysis: {str(e)}")
             QMessageBox.warning(
@@ -386,7 +463,7 @@ class GuardioUI(QWidget):
         
         # Create colored overlay
         overlay = image.copy()
-        colored_mask = np.zeros_like(image)
+        colored_mask = np.zeros_like(overlay)
         colored_mask[resized_mask > 0] = [0, 255, 0]  # Green color for wrinkles
         
         # Add glow effect to make wrinkles more visible
@@ -492,6 +569,7 @@ class GuardioUI(QWidget):
         cv2.fillPoly(mask, [np.array(u_points, dtype=np.int32)], 255)
 
         lab_image = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
+
         mean_color = cv2.mean(lab_image, mask=mask)
         L, A, B = mean_color[:3]
 
@@ -509,6 +587,22 @@ class GuardioUI(QWidget):
             skin_tone_label = "Dark"
 
         self.skin_label.setText(f"Skin Tone: {skin_tone_label}")
+
+    def dark_circle_overlay(self, image, dark_pixels_mask):
+        # Create an overlay image (same size as original)
+        overlay = np.zeros_like(image, dtype=np.uint8)
+
+        # # Create a boolean mask for dark pixels within the eye region
+        # dark_pixels_mask = (combined_dark_circle_mask_full_size == 0) & (total_eye_region_mask > 0)
+
+        # Set red color [B, G, R] = [0, 0, 255] where dark_pixels_mask is True
+        overlay[dark_pixels_mask] = [0, 0, 255]
+
+        # Blend the overlay with the original image
+        alpha = 0.7  # Transparency factor
+        overlaid_image = cv2.addWeighted(image, 1 - alpha, overlay, alpha, 0)
+
+        return overlaid_image
 
     def preprocess_for_wrinkle(self, image):
         # Convert to RGB and normalize
@@ -565,16 +659,122 @@ class GuardioUI(QWidget):
             return f"Wrinkle Score: {score:.1f}, Estimated Skin Age: {age}", binary_mask
         except Exception as e:
             print(f"Error in wrinkle analysis: {str(e)}")
-            return "Wrinkle Analysis: Error during processing"
+            return
 
+    def detect_landmarks(self, image):
+        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
+            results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            if results.multi_face_landmarks:
+                return results.multi_face_landmarks[0]
+        return None
+
+    def crop_to_butterfly_zone(self, image, landmarks, indices):
+        h, w = image.shape[:2]
+        butterfly_pts = self.get_landmark_coords(image, landmarks, indices)
+        if butterfly_pts.size == 0:
+            return None, None
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [butterfly_pts], 255)
+        ys, xs = np.where(mask > 0)
+        y_min, y_max = ys.min(), ys.max()
+        x_min, x_max = xs.min(), xs.max()
+        cropped_image = image[y_min:y_max, x_min:x_max]
+        bbox = (x_min, y_min, x_max, y_max)
+        return cropped_image, bbox
+
+    def analyze_pores(self, image):
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        landmark = self.detect_landmarks(image)
+        cropped_img, bbox = self.crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
+        img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        normalized = enhanced.astype(np.float32) / 255.0
+
+        # Convert to 3 channels
+        image = np.stack([normalized] * 3, axis=-1)
+
+        # img = np.expand_dims(img, axis=0)
+
+        # Ensure IMG_SIZE is a tuple of integers
+        image = cv2.resize(image, IMG_SIZE)
+        img = np.expand_dims(image, axis=0)
+
+        #cv2.imshow((image * 255).astype(np.uint8))
+        pred = pores_model.predict(img)
+        # If model output is (1, 256, 256, 1), squeeze to (256, 256)
+        if pred.shape[-1] == 1:
+            pred = pred[0, ..., 0]
+        else:
+            pred = pred[0]
+        return pred, cropped_img, bbox
+
+    def calculate_pores_score(self, pred_mask, threshold=0.2):
+        """
+        Calculates a pores score out of 100, where higher is better (fewer pores).
+        """
+        pores_mask = (pred_mask > threshold).astype(np.uint8)
+        pore_pixel_count = np.sum(pores_mask)
+        total_pixel_count = pores_mask.size
+        pore_fraction = pore_pixel_count / total_pixel_count
+        pores_score = (1 - pore_fraction) * 100
+        return f"Wrinkle Score: {pores_score:.1f}"
+
+    def overlay_pores(self, image, mask, bbox=None, alpha=0.7, mask_color=(255, 0, 255)):
+        """
+        Safely overlays a predicted mask onto the original image using a bounding box.
+
+        Args:
+            original_image: The full, original image.
+            pred_mask: The prediction mask from the model (for the cropped region).
+            bbox: The (x_min, y_min, x_max, y_max) bounding box for the crop.
+            threshold: The value to binarize the mask (0-1).
+            alpha: The transparency of the overlay.
+            mask_color: The (B, G, R) color for the mask.
+
+        Returns:
+            The image with the mask overlaid.
+        """
+        # Create a copy of the original image to draw on
+        overlay_img = image.copy()
+
+        # 1. Binarize the predicted mask
+        mask_bin = (mask > 0.1).astype(np.uint8) * 255
+
+        # 2. Handle the "no pores detected" edge case
+        if np.sum(mask_bin) == 0:
+            return image  # Nothing to overlay, return the original
+
+        # 3. Get coordinates and dimensions from the bounding box
+        x_min, y_min, x_max, y_max = bbox
+        h_bbox, w_bbox = y_max - y_min, x_max - x_min
+
+        # 4. Handle invalid bounding box
+        if h_bbox <= 0 or w_bbox <= 0:
+            return image
+
+        # 5. Resize the mask to the size of the bounding box
+        mask_resized = cv2.resize(mask_bin, (w_bbox, h_bbox), interpolation=cv2.INTER_NEAREST)
+
+        # 6. Create a solid color mask for blending
+        color_mask = np.zeros((h_bbox, w_bbox, 3), dtype=np.uint8)
+        color_mask[mask_resized > 0] = mask_color
+
+        # 7. Extract the Region of Interest (ROI) from the image
+        roi = overlay_img[y_min:y_max, x_min:x_max]
+
+        # 8. Blend the color mask with the ROI
+        blended_roi = cv2.addWeighted(roi, 1.0, color_mask, alpha, 0)
+
+        # 9. Place the blended ROI back into the main image
+        overlay_img[y_min:y_max, x_min:x_max] = blended_roi
+
+        return overlay_img
 
     def analyze_skin_type_patches(self, image_path):
         if skin_type_model is None:
             return "Skin Type Model: Not available"
-
-        from PIL import Image
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
 
         try:
             image = Image.open(image_path).convert("RGB")
@@ -667,9 +867,8 @@ class GuardioUI(QWidget):
         valid_indexes = [i for i in indexes if i is not None and 0 <= i < len(landmarks)]
         return np.array([(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in valid_indexes], np.int32)
 
-
     
-    def different_zones(self,image, landmarks):
+    def dark_circle_segments(self,image, landmarks):
         """ Generate segmented facial region masks and segments for left/right eyes """
         h, w = image.shape[:2]
 
@@ -720,17 +919,11 @@ class GuardioUI(QWidget):
         h_orig, w_orig = original_image.shape[:2]
 
         # --- Initialize and use FaceMesh directly within this function ---
-        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
-            results = face_mesh.process(rgb_image)
 
-        if not results.multi_face_landmarks:
-            print(f"No face detected in {image}.")
-            return original_image, np.zeros((h_orig, w_orig), dtype=np.uint8), 0.0 # Return original image and empty mask
-
-        landmarks = results.multi_face_landmarks[0]
+        landmarks = self.detect_landmarks(rgb_image)
 
         # Get segmented eye regions (same size as original image) and the masks
-        left_segment, right_segment, left_eye_mask_full, right_eye_mask_full = self.different_zones(original_image, landmarks)
+        left_segment, right_segment, left_eye_mask_full, right_eye_mask_full = self.dark_circle_segments(original_image, landmarks)
 
         # Initialize masks for detected dark circles (full size)
         left_dark_circle_mask_full_size = np.zeros((h_orig, w_orig), dtype=np.uint8)
@@ -746,7 +939,7 @@ class GuardioUI(QWidget):
             if gray_left_eye.shape[0] >= ksize[0] and gray_left_eye.shape[1] >= ksize[1]:
                 blurred_left_eye = cv2.GaussianBlur(gray_left_eye, ksize, 0)
             else:
-                print(f"Left eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Left eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_left_eye = gray_left_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the left eye segment
@@ -757,7 +950,7 @@ class GuardioUI(QWidget):
                 # ret_left, thresh_left = cv2.threshold(blurred_left_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 left_dark_circle_mask_full_size = thresh_left # This mask is already full size
             except cv2.error as e:
-                print(f"Error during left eye thresholding for {image_path}: {e}")
+                print(f"Error during left eye thresholding for {image}: {e}")
 
 
         # Process Right Eye Segment
@@ -769,7 +962,7 @@ class GuardioUI(QWidget):
             if gray_right_eye.shape[0] >= ksize[0] and gray_right_eye.shape[1] >= ksize[1]:
                 blurred_right_eye = cv2.GaussianBlur(gray_right_eye, ksize, 0)
             else:
-                print(f"Right eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Right eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_right_eye = gray_right_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the right eye segment
@@ -780,7 +973,7 @@ class GuardioUI(QWidget):
                 # ret_right, thresh_right = cv2.threshold(blurred_right_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 right_dark_circle_mask_full_size = thresh_right # This mask is already full size
             except cv2.error as e:
-                print(f"Error during right eye thresholding for {image_path}: {e}")
+                print(f"Error during right eye thresholding for {image}: {e}")
 
 
         # Combine the left and right dark circle masks (full size)
@@ -798,6 +991,9 @@ class GuardioUI(QWidget):
         total_eye_region_mask = cv2.bitwise_or(left_eye_mask_full, right_eye_mask_full) # Combine the original eye region masks
         total_eye_pixel_count = np.sum(total_eye_region_mask > 0) # Count non-zero pixels in the eye region mask
 
+        # Create a boolean mask for dark pixels within the eye region
+        dark_pixels_mask = (combined_dark_circle_mask_full_size == 0) & (total_eye_region_mask > 0)
+
         dark_circle_pixel_count = np.sum(combined_dark_circle_mask_full_size > 0) # Count non-zero pixels in the dark circle mask
 
         dark_circle_score = 0.0
@@ -808,7 +1004,7 @@ class GuardioUI(QWidget):
         # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
 
-        return original_image, combined_dark_circle_mask_full_size, dark_circle_score
+        return original_image, combined_dark_circle_mask_full_size, dark_circle_score, dark_pixels_mask
     
     
     def upload_photo(self):
