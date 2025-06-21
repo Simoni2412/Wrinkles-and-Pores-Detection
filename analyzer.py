@@ -542,6 +542,7 @@ def crop_to_butterfly_zone(image, landmarks, indices):
         return None, None
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [butterfly_pts], 255)
+    cv2.fillPoly(mask, [butterfly_pts], 255)
     ys, xs = np.where(mask > 0)
     y_min, y_max = ys.min(), ys.max()
     x_min, x_max = xs.min(), xs.max()
