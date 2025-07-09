@@ -45,7 +45,7 @@ def spatial_attention(x):
     return layers.Multiply()([x, attention])
 
 # === Load Models ===
-WRINKLE_MODEL_PATH = 'model_yesspatial_yesaugment_batch5_v01.h5'
+WRINKLE_MODEL_PATH = 'model_wrinkles_batch5 (2).h5'
 SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
 PORES_MODEL_PATH = "model_pores_batch3.h5"
 
@@ -120,6 +120,8 @@ u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 28
                   57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
 
 IMG_SIZE = (256, 256)
+face_padding = 50
+cap = None
 
 print("Succesfully entered the analyzer file")
 
@@ -155,6 +157,39 @@ def crop_to_face(frame, face):
             x2 = min(width, x2 + diff//2)
         print("Leaving the crop face function")
         return frame[y1:y2, x1:x2]
+
+def validate_conditions(frame, faces):
+    """Check lighting and face alignment conditions."""
+    if len(faces) == 0:
+        return False
+
+    # Lighting condition
+    brightness = frame.mean()
+    if brightness < 80:  # Raised from 50 to 80 for better lighting
+        return False
+
+    # Face position and size validation (centered and large enough)
+    h, w = frame.shape[:2]
+    x, y, fw, fh = faces[0]  # first detected face
+
+    face_center_x = x + fw // 2
+    face_center_y = y + fh // 2
+
+    frame_center_x = w // 2
+    frame_center_y = h // 2
+
+    # Check if face is centered within a small range
+    offset_x = abs(face_center_x - frame_center_x)
+    offset_y = abs(face_center_y - frame_center_y)
+
+    if offset_x > w * 0.1 or offset_y > h * 0.1:
+        return False
+
+    # Check if face is large enough (indicates closeness)
+    if fw < w * 0.2 or fh < h * 0.2:
+        return False
+
+    return True
 
 def detect_landmarks(image):
     with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
@@ -192,10 +227,10 @@ def draw_guide(frame, validations_met):
 def update_frame(image):
         """Update the video preview"""
         print("Entering the update frame function")
-        if cap is None:
-            return
+        # if cap is None:
+        #     return
 
-        ret, frame = cap.read()
+        ret, frame = image.read()
         if ret:
             frame = cv2.resize(frame, (1000, 680))
             faces = detect_face(frame)
@@ -471,7 +506,7 @@ def detect_dark_circles_otsu(image):
             if gray_left_eye.shape[0] >= ksize[0] and gray_left_eye.shape[1] >= ksize[1]:
                 blurred_left_eye = cv2.GaussianBlur(gray_left_eye, ksize, 0)
             else:
-                print(f"Left eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Left eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_left_eye = gray_left_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the left eye segment
@@ -482,7 +517,7 @@ def detect_dark_circles_otsu(image):
                 # ret_left, thresh_left = cv2.threshold(blurred_left_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 left_dark_circle_mask_full_size = thresh_left # This mask is already full size
             except cv2.error as e:
-                print(f"Error during left eye thresholding for {image_path}: {e}")
+                print(f"Error during left eye thresholding for {image}: {e}")
 
 
         # Process Right Eye Segment
@@ -494,7 +529,7 @@ def detect_dark_circles_otsu(image):
             if gray_right_eye.shape[0] >= ksize[0] and gray_right_eye.shape[1] >= ksize[1]:
                 blurred_right_eye = cv2.GaussianBlur(gray_right_eye, ksize, 0)
             else:
-                print(f"Right eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Right eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_right_eye = gray_right_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the right eye segment
@@ -505,7 +540,7 @@ def detect_dark_circles_otsu(image):
                 # ret_right, thresh_right = cv2.threshold(blurred_right_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 right_dark_circle_mask_full_size = thresh_right # This mask is already full size
             except cv2.error as e:
-                print(f"Error during right eye thresholding for {image_path}: {e}")
+                print(f"Error during right eye thresholding for {image}: {e}")
 
 
         # Combine the left and right dark circle masks (full size)
@@ -559,12 +594,12 @@ def calculate_pores_score(pred_mask, threshold=0.2):
     total_pixel_count = pores_mask.size
     pore_fraction = pore_pixel_count / total_pixel_count
     pores_score = (1 - pore_fraction) * 100
-    return f" Pores  Score: {pores_score:.1f}"
+    return pores_score
 
 def analyze_pores(image):
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     landmark = detect_landmarks(image)
-    cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
+    cropped_img, bbox = crop_to_butterfly_zone(image, landmark, BUTTERFLY_ZONE_INDICES)
     img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
