@@ -17,7 +17,8 @@ from analyzer import (
     analyze_skin_type_patches,
     detect_skin_tone,
     analyze_wrinkles,
-    detect_dark_circles_otsu
+    detect_dark_circles_otsu,
+    analyze_pores
 )
 
 app = FastAPI()
@@ -95,12 +96,16 @@ def analyze_image_np(image: np.ndarray) -> dict:
         logger.debug("Calling detect_dark_circles_otsu()")
         dark_circle_score = detect_dark_circles_otsu(image)
 
+        logger.debug("Calling analyze_pores()")
+        pores_score = analyze_pores(image)
+
         result = {
             "skin_type": skin_type,
             "skin_tone": skin_tone,
             "wrinkle_score": wrinkle_score,
             "skin_age": skin_age,
-            "dark_circle_score": dark_circle_score[2],  # Assuming third item is score
+            "dark_circle_score": dark_circle_score[2],
+            "pores_score": pores_score[3],  # Assuming third item is score
             "timestamp": timestamp
         }
         logger.debug(f"Analysis result: {result}")
