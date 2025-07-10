@@ -1,4 +1,5 @@
 from PIL import Image
+import pillow_heif
 import numpy as np
 import cv2
 import random
@@ -9,6 +10,9 @@ from tensorflow.keras import layers
 #import matplotlib.pyplot as plt
 import os
 import sys
+from datetime import datetime
+import uuid 
+
 
 # === Custom Loss Functions for Wrinkle Model ===
 def attention_block(x, g, inter_channels):
@@ -36,7 +40,6 @@ def channel_avg(x):
 def channel_max(x):
     return tf.reduce_max(x, axis=-1, keepdims=True)
 
-
 def spatial_attention(x):
     avg_pool =  layers.Lambda(channel_avg)(x)
     max_pool = layers.Lambda(channel_max)(x)
@@ -45,7 +48,8 @@ def spatial_attention(x):
     return layers.Multiply()([x, attention])
 
 # === Load Models ===
-WRINKLE_MODEL_PATH = 'model_wrinkles_batch5 (2).h5'
+
+WRINKLE_MODEL_PATH = 'model_wrinkles_batch5_v2.h5'
 SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
 PORES_MODEL_PATH = "model_pores_batch3.h5"
 
@@ -57,7 +61,9 @@ def load_wrinkle_model():
                 custom_objects={
                     'dice_loss': dice_loss,
                     'combined_loss': combined_loss,
-                    'attention_block': attention_block,
+                    'channel_avg': channel_avg,
+                    'channel_max': channel_max,
+                    'spatial_attention': spatial_attention  # if applicable
                 }
             )
         except Exception as e:
@@ -89,7 +95,6 @@ def load_pores_model():
             print(f"Error loading wrinkle model: {str(e)}")
     return None
 
-
 wrinkle_model = load_wrinkle_model()
 skin_type_model = load_skin_type_model()
 pores_model = load_pores_model()
@@ -101,27 +106,58 @@ face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1)
 # === Face Detector ===
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-
-# === Dark Circle Model ===
-LEFT_EYE_IDXS = [
-    35, 226, 25, 110, 24, 23, 154, 243, 112, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
-
-RIGHT_EYE_IDXS = [
-    463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 255, 339, 254, 253, 381# Right eye outer contour
-]
-
-# Butterfly indices for pores model
-BUTTERFLY_ZONE_INDICES = [111, 117, 119, 120, 121, 128, 122, 6, 351, 357, 350, 349, 348, 347, 346, 345, 352, 376, 433, 416,
-                          434, 432, 410, 423, 278, 344, 440, 275, 4, 45, 220, 115, 48, 203, 186, 186, 212, 214, 192, 123, 116]
-
-#U zone indices for Skin Type model
-u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152,
-                  148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92,
-                  57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453]
-
+LEFT_EYE_IDXS = [124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
+RIGHT_EYE_IDXS = [463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463] # Right eye outer contour
+u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92, 57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453] #U zone indices for Skin Type model
+BUTTERFLY_ZONE_INDICES = [111, 117, 119, 120, 121, 128, 122, 6, 351, 357, 350, 349, 348, 347, 346, 345, 352, 376, 433, 416, 434, 432, 410, 423, 278, 344, 440, 275, 4, 45, 220, 115, 48, 203, 186, 186, 212, 214, 192, 123, 116] # Butterfly indices for pores model
 IMG_SIZE = (256, 256)
 face_padding = 50
 cap = None
+
+# For supporting HEIC image format
+pillow_heif.register_heif_opener()
+
+print("Succesfully entered the analyzer file")
+
+def load_and_convert_image(image_input):
+    """
+    Converts image_input into an OpenCV-compatible BGR NumPy array.
+    Accepts:
+        - File path (str, including .jpg, .png, .heic, etc.)
+        - PIL.Image.Image
+        - NumPy array
+    Returns:
+        - BGR NumPy array (OpenCV style)
+    """
+
+    if isinstance(image_input, str):
+        try:
+            try:
+                image = Image.open(io.BytesIO(contents)).convert("RGB")
+                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                logger.error(f"Failed to open image: {e}")
+                return jsonify({"error": "Unsupported or corrupt image file."}), 400
+        except Exception as e:
+            raise ValueError(f"Failed to load image from path '{image_input}': {e}")
+
+    elif isinstance(image_input, Image.Image):
+        return cv2.cvtColor(np.array(image_input.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif isinstance(image_input, np.ndarray):
+        if image_input.ndim == 2:
+            return cv2.cvtColor(image_input, cv2.COLOR_GRAY2BGR)
+        elif image_input.shape[2] == 3:
+            return image_input  # Already BGR
+        elif image_input.shape[2] == 4:
+            return cv2.cvtColor(image_input, cv2.COLOR_BGRA2BGR)
+        else:
+            raise ValueError("Unsupported image array format.")
+
+    else:
+        raise TypeError("Unsupported image input. Provide file path, PIL.Image, or NumPy array.")
+
+    
 
 print("Succesfully entered the analyzer file")
 
@@ -129,7 +165,7 @@ def detect_face(frame):
         print("Succesfully entered the detect face function")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-        print("Leaving the detect face function")
+        print("Leaving the detect face function")   
         return faces
 
 def crop_to_face(frame, face):
@@ -211,9 +247,7 @@ def get_landmark_coords(image, landmarks, indexes):
         return np.array([(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in valid_indexes], np.int32)
 
 def draw_guide(frame, validations_met):
-
         print("Entering the draw guide function")
-
         height, width = frame.shape[:2]
         center_x, center_y = width // 2, height // 2
         axis_x = width // 9
@@ -223,6 +257,39 @@ def draw_guide(frame, validations_met):
         
         print("Leaving the draw guide function")
         return frame
+
+def validate_conditions(frame, faces):
+    """Check lighting and face alignment conditions."""
+    if len(faces) == 0:
+        return False
+
+    # Lighting condition
+    brightness = frame.mean()
+    if brightness < 80:  # Raised from 50 to 80 for better lighting
+        return False
+
+    # Face position and size validation (centered and large enough)
+    h, w = frame.shape[:2]
+    x, y, fw, fh = faces[0]  # first detected face
+
+    face_center_x = x + fw // 2
+    face_center_y = y + fh // 2
+
+    frame_center_x = w // 2
+    frame_center_y = h // 2
+
+    # Check if face is centered within a small range
+    offset_x = abs(face_center_x - frame_center_x)
+    offset_y = abs(face_center_y - frame_center_y)
+
+    if offset_x > w * 0.1 or offset_y > h * 0.1:
+        return False
+
+    # Check if face is large enough (indicates closeness)
+    if fw < w * 0.2 or fh < h * 0.2:
+        return False
+
+    return True
 
 def update_frame(image):
         """Update the video preview"""
@@ -313,50 +380,54 @@ def wrinkle_score_to_age(score, min_age=20, max_age=80):
         return min(int(age), 70)
 
 def analyze_wrinkles(image):
-        print("Entering the analyze wrinkle function")
-        output_dir = 'output/predicted_masks'
-        os.makedirs(output_dir, exist_ok=True)
-        if wrinkle_model is None:
-            return {"wrinkle_score": None, "estimated_age": None, "message": "Wrinkle model not available"}
-            
-        try:
-            preprocessed = preprocess_for_wrinkle(image)
-            predicted_mask = wrinkle_model.predict(preprocessed)
-            if predicted_mask.shape[-1] == 1:
-                predicted_mask = predicted_mask[0, ..., 0]
-            else:
-                predicted_mask = predicted_mask[0]
-            
-            binary_mask = (predicted_mask > 0.5).astype(np.uint8) 
+    print("Entering the analyze wrinkle function")
+    output_dir = 'output/predicted_wrinkle_masks'
+    image = load_and_convert_image(image)
+    os.makedirs(output_dir, exist_ok=True)
 
-            # Determine original filename (e.g., uploaded_face_1234.jpg)
-            # Convert mask to uint8
-            if predicted_mask.dtype != np.uint8:
-                predicted_mask = (predicted_mask * 255).astype(np.uint8)
-
-            # Saving the predicted mask
-            # original_filename = os.path.basename(image)
-            # filename_wo_ext = os.path.splitext(original_filename)[0]
-            # Save mask
-            filename_wo_ext = "default"
-            if isinstance(image, str):  # If image is a path
-                filename_wo_ext = os.path.splitext(os.path.basename(image))[0]
-
-            mask_filename = f"{filename_wo_ext}_mask.png"
-            mask_path = os.path.join(output_dir, mask_filename)
-            cv2.imwrite(mask_path, predicted_mask)
-            print(f"Saved wrinkle mask to: {mask_path}")
-
-            
-            score = wrinkle_score(binary_mask)
-            age = wrinkle_score_to_age(score)
-            # print(cv2.imshow("Predicted Mask", predicted_mask))
-            print("Leaving the wrinkle analyze to age function")
-            return score, age
+    if wrinkle_model is None:
+        return {"wrinkle_score": None, "estimated_age": None, "message": "Wrinkle model not available"}
+    
+    try:
+        preprocessed = preprocess_for_wrinkle(image)
+        predicted_mask = wrinkle_model.predict(preprocessed)
         
-        except Exception as e:
-            print(f"Error in wrinkle analysis: {str(e)}")
-            return None, None
+        if predicted_mask.shape[-1] == 1:
+            predicted_mask = predicted_mask[0, ..., 0]
+        else:
+            predicted_mask = predicted_mask[0]
+        
+        binary_mask = (predicted_mask > 0.5).astype(np.uint8)
+
+        if predicted_mask.dtype != np.uint8:
+            predicted_mask = (predicted_mask * 255).astype(np.uint8)
+
+        # Derive filename from input image
+        if isinstance(image, str):
+            filename_wo_ext = os.path.splitext(os.path.basename(image))[0]
+        else:
+            filename_wo_ext = f"uploaded_image_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        mask_filename = f"{filename_wo_ext}_mask.png"
+        mask_path = os.path.join(output_dir, mask_filename)
+
+        # Optional: check if file exists, append timestamp if it does (prevent overwrite)
+        if os.path.exists(mask_path):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            mask_filename = f"{filename_wo_ext}_mask_{timestamp}.png"
+            mask_path = os.path.join(output_dir, mask_filename)
+
+        cv2.imwrite(mask_path, predicted_mask)
+        print(f"Saved wrinkle mask to: {mask_path}")
+
+        score = wrinkle_score(binary_mask)
+        age = wrinkle_score_to_age(score)
+        print("Leaving the wrinkle analyze to age function")
+        return score, age
+
+    except Exception as e:
+        print(f"Error in wrinkle analysis: {str(e)}")
+        return "No face Detected."
 
 def detect_skin_tone(image):
         print("Entering the detect skin tone function")
@@ -366,8 +437,7 @@ def detect_skin_tone(image):
         results = face_mesh.process(rgb_image)
 
         if not results.multi_face_landmarks:
-            skin_label.setText("No face detected.")
-            return
+            return "No face detected."
 
         landmarks = results.multi_face_landmarks[0]
         u_points = [(int(landmarks.landmark[i].x * w), int(landmarks.landmark[i].y * h)) for i in u_zone_indices]
@@ -562,7 +632,7 @@ def detect_dark_circles_otsu(image):
 
         dark_circle_score = 0.0
         if total_eye_pixel_count > 0:
-            dark_circle_score = (dark_circle_pixel_count / total_eye_pixel_count) * 100 # Score as percentage of eye area
+            dark_circle_score = int((dark_circle_pixel_count / total_eye_pixel_count) * 100) # Score as percentage of eye area
 
         # You could refine the score calculation, e.g., consider intensity within the dark circle mask on the original image.
         # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
@@ -593,6 +663,16 @@ def calculate_pores_score(pred_mask, threshold=0.2):
     pore_pixel_count = np.sum(pores_mask)
     total_pixel_count = pores_mask.size
     pore_fraction = pore_pixel_count / total_pixel_count
+    pores_score = int((1 - pore_fraction) * 100)
+    return pores_score
+
+
+def analyze_pores(image):
+    
+    # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    landmark = detect_landmarks(image)
+    cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
+
     pores_score = (1 - pore_fraction) * 100
     return pores_score
 
@@ -608,9 +688,7 @@ def analyze_pores(image):
 
     # Convert to 3 channels
     image = np.stack([normalized] * 3, axis=-1)
-
-    # img = np.expand_dims(img, axis=0)
-
+    # img = np.expand_dims(img, axis=0
     # Ensure IMG_SIZE is a tuple of integers
     image = cv2.resize(image, IMG_SIZE)
     img = np.expand_dims(image, axis=0)
@@ -622,9 +700,22 @@ def analyze_pores(image):
         pred = pred[0, ..., 0]
     else:
         pred = pred[0]
-
     pores_score = calculate_pores_score(pred)
 
+    output_dir = 'output/predicted_pore_masks'
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    unique_id = str(uuid.uuid4())[:8]  # Optional: shorten UUID
+    mask_filename = f"pore_mask_{timestamp}_{unique_id}.png"
+    mask_path = os.path.join(output_dir, mask_filename)
+    # Convert mask to uint8 if needed
+    if pred.dtype != np.uint8:
+        pred_to_save = (pred * 255).astype(np.uint8)
+    else:
+        pred_to_save = pred
+
+    cv2.imwrite(mask_path, pred_to_save)
+    print(f"Saved pore mask to: {mask_path}")
+
     return pred, cropped_img, bbox, pores_score
-
-
