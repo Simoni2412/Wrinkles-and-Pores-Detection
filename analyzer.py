@@ -633,7 +633,6 @@ def calculate_pores_score(pred_mask, threshold=0.2):
 
 
 def analyze_pores(image):
-
     # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     landmark = detect_landmarks(image)
     cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)

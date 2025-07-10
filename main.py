@@ -145,7 +145,6 @@ async def analyze_photo(file: UploadFile = File(...)):
             content={"status": "error", "message": str(e), "traceback": tb}
         )
 
-
 @app.get("/job-status/{job_id}")
 async def get_job_status(job_id: str):
     # Assuming supabase_client is initialized and available in your real code
