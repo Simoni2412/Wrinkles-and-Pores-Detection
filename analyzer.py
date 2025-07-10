@@ -6,7 +6,8 @@ import random
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-import matplotlib.pyplot as plt
+from tensorflow.keras import layers
+#import matplotlib.pyplot as plt
 import os
 import sys
 from datetime import datetime
@@ -47,6 +48,7 @@ def spatial_attention(x):
     return layers.Multiply()([x, attention])
 
 # === Load Models ===
+
 WRINKLE_MODEL_PATH = 'model_wrinkles_batch5_v2.h5'
 SKIN_TYPE_MODEL_PATH = "skin_type_classifier_best_June01.h5"
 PORES_MODEL_PATH = "model_pores_batch3.h5"
@@ -104,7 +106,6 @@ face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1)
 # === Face Detector ===
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-
 LEFT_EYE_IDXS = [124, 247, 7, 163, 144, 145, 153, 154, 243, 244, 245, 188, 114, 47, 100, 101, 50, 123, 116, 143]  # Left eye outer contour4
 RIGHT_EYE_IDXS = [463, 464, 465, 412, 343, 277, 329, 330, 280, 352, 345, 372, 446, 249, 390, 373, 374, 380, 381, 398, 463] # Right eye outer contour
 u_zone_indices = [452, 451, 450, 449, 448, 261, 265, 372, 345, 352, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 135, 192, 123, 116,143, 35, 31, 228, 229, 230, 231, 232, 233, 47, 142, 203, 92, 57, 43, 106,182, 83, 18, 313, 406, 335, 273, 287, 410, 423, 371, 277, 453] #U zone indices for Skin Type model
@@ -117,8 +118,6 @@ cap = None
 pillow_heif.register_heif_opener()
 
 print("Succesfully entered the analyzer file")
-
-
 
 def load_and_convert_image(image_input):
     """
@@ -159,6 +158,9 @@ def load_and_convert_image(image_input):
         raise TypeError("Unsupported image input. Provide file path, PIL.Image, or NumPy array.")
 
     
+
+print("Succesfully entered the analyzer file")
+
 def detect_face(frame):
         print("Succesfully entered the detect face function")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -191,6 +193,39 @@ def crop_to_face(frame, face):
             x2 = min(width, x2 + diff//2)
         print("Leaving the crop face function")
         return frame[y1:y2, x1:x2]
+
+def validate_conditions(frame, faces):
+    """Check lighting and face alignment conditions."""
+    if len(faces) == 0:
+        return False
+
+    # Lighting condition
+    brightness = frame.mean()
+    if brightness < 80:  # Raised from 50 to 80 for better lighting
+        return False
+
+    # Face position and size validation (centered and large enough)
+    h, w = frame.shape[:2]
+    x, y, fw, fh = faces[0]  # first detected face
+
+    face_center_x = x + fw // 2
+    face_center_y = y + fh // 2
+
+    frame_center_x = w // 2
+    frame_center_y = h // 2
+
+    # Check if face is centered within a small range
+    offset_x = abs(face_center_x - frame_center_x)
+    offset_y = abs(face_center_y - frame_center_y)
+
+    if offset_x > w * 0.1 or offset_y > h * 0.1:
+        return False
+
+    # Check if face is large enough (indicates closeness)
+    if fw < w * 0.2 or fh < h * 0.2:
+        return False
+
+    return True
 
 def detect_landmarks(image):
     with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
@@ -259,10 +294,10 @@ def validate_conditions(frame, faces):
 def update_frame(image):
         """Update the video preview"""
         print("Entering the update frame function")
-        if cap is None:
-            return
+        # if cap is None:
+        #     return
 
-        ret, frame = cap.read()
+        ret, frame = image.read()
         if ret:
             frame = cv2.resize(frame, (1000, 680))
             faces = detect_face(frame)
@@ -541,7 +576,7 @@ def detect_dark_circles_otsu(image):
             if gray_left_eye.shape[0] >= ksize[0] and gray_left_eye.shape[1] >= ksize[1]:
                 blurred_left_eye = cv2.GaussianBlur(gray_left_eye, ksize, 0)
             else:
-                print(f"Left eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Left eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_left_eye = gray_left_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the left eye segment
@@ -552,7 +587,7 @@ def detect_dark_circles_otsu(image):
                 # ret_left, thresh_left = cv2.threshold(blurred_left_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 left_dark_circle_mask_full_size = thresh_left # This mask is already full size
             except cv2.error as e:
-                print(f"Error during left eye thresholding for {image_path}: {e}")
+                print(f"Error during left eye thresholding for {image}: {e}")
 
 
         # Process Right Eye Segment
@@ -564,7 +599,7 @@ def detect_dark_circles_otsu(image):
             if gray_right_eye.shape[0] >= ksize[0] and gray_right_eye.shape[1] >= ksize[1]:
                 blurred_right_eye = cv2.GaussianBlur(gray_right_eye, ksize, 0)
             else:
-                print(f"Right eye segment size too small for blur kernel {ksize} in {image_path}.")
+                print(f"Right eye segment size too small for blur kernel {ksize} in {image}.")
                 blurred_right_eye = gray_right_eye # Skip blur if too small
 
             # Apply Otsu's thresholding to the right eye segment
@@ -575,7 +610,7 @@ def detect_dark_circles_otsu(image):
                 # ret_right, thresh_right = cv2.threshold(blurred_right_eye, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 right_dark_circle_mask_full_size = thresh_right # This mask is already full size
             except cv2.error as e:
-                print(f"Error during right eye thresholding for {image_path}: {e}")
+                print(f"Error during right eye thresholding for {image}: {e}")
 
 
         # Combine the left and right dark circle masks (full size)
@@ -604,7 +639,7 @@ def detect_dark_circles_otsu(image):
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
         print("exiting the dark circle function")
         return original_image, combined_dark_circle_mask_full_size, dark_circle_score
-    
+
 def crop_to_butterfly_zone(image, landmarks, indices):
     h, w = image.shape[:2]
     butterfly_pts = get_landmark_coords(image, landmarks, indices)
@@ -637,14 +672,23 @@ def analyze_pores(image):
     # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     landmark = detect_landmarks(image)
     cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
+
+    pores_score = (1 - pore_fraction) * 100
+    return pores_score
+
+def analyze_pores(image):
+    #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    landmark = detect_landmarks(image)
+    cropped_img, bbox = crop_to_butterfly_zone(image, landmark, BUTTERFLY_ZONE_INDICES)
     img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     normalized = enhanced.astype(np.float32) / 255.0
+
     # Convert to 3 channels
     image = np.stack([normalized] * 3, axis=-1)
-    # img = np.expand_dims(img, axis=0)
+    # img = np.expand_dims(img, axis=0
     # Ensure IMG_SIZE is a tuple of integers
     image = cv2.resize(image, IMG_SIZE)
     img = np.expand_dims(image, axis=0)

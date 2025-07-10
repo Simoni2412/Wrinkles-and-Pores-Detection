@@ -95,6 +95,7 @@ def analyze_image_np(image: np.ndarray) -> dict:
 
         logger.debug("Calling detect_dark_circles_otsu()")
         dark_circle_score = detect_dark_circles_otsu(image)
+        pores_score = analyze_pores(image)
 
         logger.debug("Calling analyze_pores()")
         pores_score = analyze_pores(image)
