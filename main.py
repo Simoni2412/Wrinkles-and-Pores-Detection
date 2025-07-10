@@ -146,6 +146,7 @@ async def analyze_photo(file: UploadFile = File(...)):
         )
 
 @app.get("/job-status/{job_id}")
+
 async def get_job_status(job_id: str):
     # Assuming supabase_client is initialized and available in your real code
     job = await supabase_client.from_('analysis_jobs').select('*').eq('id', job_id).single()
