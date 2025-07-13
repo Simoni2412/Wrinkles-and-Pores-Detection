@@ -657,8 +657,10 @@ def detect_dark_circles_otsu(image):
         # You could refine the score calculation, e.g., consider intensity within the dark circle mask on the original image.
         # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
+        dark_circle_score = 100 - dark_circle_score
         print("exiting the dark circle function")
         logger.info(f"Analyzer.py: Dark circle score: {dark_circle_score}")
+
         return original_image, combined_dark_circle_mask_full_size, dark_circle_score
 
 def crop_to_butterfly_zone(image, landmarks, indices):
@@ -684,7 +686,7 @@ def calculate_pores_score(pred_mask, threshold=0.2):
     pore_pixel_count = np.sum(pores_mask)
     total_pixel_count = pores_mask.size
     pore_fraction = pore_pixel_count / total_pixel_count
-    pores_score = int((1 - pore_fraction) * 100)
+    pores_score = int(pore_fraction * 100)
     return pores_score
 
 def analyze_pores(image):
