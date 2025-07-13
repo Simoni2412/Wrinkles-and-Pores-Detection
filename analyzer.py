@@ -10,9 +10,22 @@ from tensorflow.keras import layers
 #import matplotlib.pyplot as plt
 import os
 import sys
+import io
 from datetime import datetime
 import uuid 
 
+
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Optional: Add handler if not already configured in main
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # === Custom Loss Functions for Wrinkle Model ===
 def attention_block(x, g, inter_channels):
@@ -382,7 +395,7 @@ def wrinkle_score_to_age(score, min_age=20, max_age=80):
 def analyze_wrinkles(image):
     print("Entering the analyze wrinkle function")
     output_dir = 'output/predicted_wrinkle_masks'
-    image = load_and_convert_image(image)
+    # image = load_and_convert_image(image)
     os.makedirs(output_dir, exist_ok=True)
 
     if wrinkle_model is None:
@@ -399,8 +412,8 @@ def analyze_wrinkles(image):
         
         binary_mask = (predicted_mask > 0.5).astype(np.uint8)
 
-        if predicted_mask.dtype != np.uint8:
-            predicted_mask = (predicted_mask * 255).astype(np.uint8)
+        # if predicted_mask.dtype != np.uint8:
+        #     predicted_mask = (predicted_mask * 255).astype(np.uint8)
 
         # Derive filename from input image
         if isinstance(image, str):
@@ -422,7 +435,10 @@ def analyze_wrinkles(image):
 
         score = wrinkle_score(binary_mask)
         age = wrinkle_score_to_age(score)
+        
         print("Leaving the wrinkle analyze to age function")
+        logger.info(f"Analyzer.py: Wrinkle score: {score}")
+        logger.info(f"Analyzer.py: Skin age: {age}")
         return score, age
 
     except Exception as e:
@@ -461,6 +477,7 @@ def detect_skin_tone(image):
         else:
             skin_tone_label = "Dark"
         print("Exiting the skin tone function")
+        logger.info(f"Analyzer.py: Skin tone: {skin_tone_label}")
         return skin_tone_label
 
 def analyze_skin_type_patches(image):
@@ -468,9 +485,9 @@ def analyze_skin_type_patches(image):
         if skin_type_model is None:
             return "Skin Type Model: Not available"
 
-        from PIL import Image
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
+        
+        # import matplotlib.pyplot as plt
+        # import matplotlib.patches as patches
 
         try:
             # image = Image.open(image_path).convert("RGB")
@@ -515,9 +532,12 @@ def analyze_skin_type_patches(image):
 
             print("exiting the skin type function")
             
+            
             if len(combined_types) > 1:
+                logger.info(f"Analyzer.py: Combination ({', '.join(combined_types)})")
                 return f"Combination ({', '.join(combined_types)})"
             else:
+                logger.info(f"Analyzer.py: Dominant type: {dominant_type}")
                 return dominant_type
 
         except Exception as e:
@@ -638,6 +658,7 @@ def detect_dark_circles_otsu(image):
         # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
         print("exiting the dark circle function")
+        logger.info(f"Analyzer.py: Dark circle score: {dark_circle_score}")
         return original_image, combined_dark_circle_mask_full_size, dark_circle_score
 
 def crop_to_butterfly_zone(image, landmarks, indices):
@@ -717,5 +738,20 @@ def analyze_pores(image):
 
     cv2.imwrite(mask_path, pred_to_save)
     print(f"Saved pore mask to: {mask_path}")
+    logger.info(f"Analyzer.py: Pores score: {pores_score}")
 
     return pred, cropped_img, bbox, pores_score
+
+if __name__ == "__main__":
+    image = cv2.imread("/Users/kavyashah/Desktop/Nofilter_Backup/CB/MVP-v01/Wrinkles-Detection/1751225360748.jpeg")
+    wrinkles_score, age = analyze_wrinkles(image)
+    skin_type = analyze_skin_type_patches(image)
+    skin_tone = detect_skin_tone(image)
+    dark_circles_score = detect_dark_circles_otsu(image)
+    pores_score = analyze_pores(image)
+    print("Wrinkles Score: ", wrinkles_score)
+    print("Age: ", age)
+    print("Skin Type: ", skin_type)
+    print("Skin Tone: ", skin_tone)
+    print("Dark Circles Score: ", dark_circles_score)
+    print("Pores Score: ", pores_score)

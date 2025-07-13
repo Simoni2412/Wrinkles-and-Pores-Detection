@@ -79,26 +79,32 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 app.add_middleware(LoggingMiddleware)
 
 
-def analyze_image_np(image: np.ndarray) -> dict:
+def analyze_image_np(image) -> dict:
     timestamp = datetime.datetime.now().isoformat()
     logger.info("Starting image analysis")
+    logger.info(f"Image: {image}")
 
     try:
         logger.debug("Calling analyze_skin_type_patches()")
         skin_type = analyze_skin_type_patches(image)
+        # logger.info(f"Skin type: {skin_type}")
 
         logger.debug("Calling detect_skin_tone()")
         skin_tone = detect_skin_tone(image)
+        # logger.info(f"Skin tone: {skin_tone}")
 
         logger.debug("Calling analyze_wrinkles()")
         wrinkle_score, skin_age = analyze_wrinkles(image)
+        # logger.info(f"Wrinkle score: {wrinkle_score}")
+        # logger.info(f"Skin age: {skin_age}")
 
         logger.debug("Calling detect_dark_circles_otsu()")
         dark_circle_score = detect_dark_circles_otsu(image)
-        pores_score = analyze_pores(image)
+        # logger.info(f"Dark circle score: {dark_circle_score}")
 
         logger.debug("Calling analyze_pores()")
         pores_score = analyze_pores(image)
+        # logger.info(f"Pores score: {pores_score}")
 
         result = {
             "skin_type": skin_type,
@@ -109,7 +115,7 @@ def analyze_image_np(image: np.ndarray) -> dict:
             "pores_score": pores_score[3],  # Assuming third item is score
             "timestamp": timestamp
         }
-        logger.debug(f"Analysis result: {result}")
+        logger.info(f"Analysis result: {result}")
         logger.info("Completed image analysis")
         return result
 
@@ -125,12 +131,12 @@ async def analyze_photo(file: UploadFile = File(...)):
         logger.info(f"Received file: filename={file.filename}, content_type={file.content_type}")
         contents = await file.read()
         logger.info(f"File size: {len(contents)} bytes")
+        cv_img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+        # image = Image.open(io.BytesIO(contents)).convert("RGB")
+        # logger.debug("Image loaded and converted to RGB")
 
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        logger.debug("Image loaded and converted to RGB")
-
-        cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        logger.debug("Image converted to OpenCV BGR format")
+        # cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        # logger.debug("Image converted to OpenCV BGR format")
 
         result = analyze_image_np(cv_img)
         logger.info("Image analysis completed successfully")
@@ -147,7 +153,6 @@ async def analyze_photo(file: UploadFile = File(...)):
         )
 
 @app.get("/job-status/{job_id}")
-
 async def get_job_status(job_id: str):
     # Assuming supabase_client is initialized and available in your real code
     job = await supabase_client.from_('analysis_jobs').select('*').eq('id', job_id).single()
