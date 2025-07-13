@@ -687,20 +687,10 @@ def calculate_pores_score(pred_mask, threshold=0.2):
     pores_score = int((1 - pore_fraction) * 100)
     return pores_score
 
-
-def analyze_pores(image):
-    
-    # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    landmark = detect_landmarks(image)
-    cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
-
-    pores_score = (1 - pore_fraction) * 100
-    return pores_score
-
 def analyze_pores(image):
     #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     landmark = detect_landmarks(image)
-    cropped_img, bbox = crop_to_butterfly_zone(image, landmark, BUTTERFLY_ZONE_INDICES)
+    cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
     img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
