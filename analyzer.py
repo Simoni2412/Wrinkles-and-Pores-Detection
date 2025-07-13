@@ -742,16 +742,16 @@ def analyze_pores(image):
 
     return pred, cropped_img, bbox, pores_score
 
-if __name__ == "__main__":
-    image = cv2.imread("/Users/kavyashah/Desktop/Nofilter_Backup/CB/MVP-v01/Wrinkles-Detection/1751225360748.jpeg")
-    wrinkles_score, age = analyze_wrinkles(image)
-    skin_type = analyze_skin_type_patches(image)
-    skin_tone = detect_skin_tone(image)
-    dark_circles_score = detect_dark_circles_otsu(image)
-    pores_score = analyze_pores(image)
-    print("Wrinkles Score: ", wrinkles_score)
-    print("Age: ", age)
-    print("Skin Type: ", skin_type)
-    print("Skin Tone: ", skin_tone)
-    print("Dark Circles Score: ", dark_circles_score)
-    print("Pores Score: ", pores_score)
+# if __name__ == "__main__":
+#     image = cv2.imread("/Users/kavyashah/Desktop/Nofilter_Backup/CB/MVP-v01/Wrinkles-Detection/1751225360748.jpeg")
+#     wrinkles_score, age = analyze_wrinkles(image)
+#     skin_type = analyze_skin_type_patches(image)
+#     skin_tone = detect_skin_tone(image)
+#     dark_circles_score = detect_dark_circles_otsu(image)
+#     pores_score = analyze_pores(image)
+#     print("Wrinkles Score: ", wrinkles_score)
+#     print("Age: ", age)
+#     print("Skin Type: ", skin_type)
+#     print("Skin Tone: ", skin_tone)
+#     print("Dark Circles Score: ", dark_circles_score)
+#     print("Pores Score: ", pores_score)
