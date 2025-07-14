@@ -126,51 +126,10 @@ BUTTERFLY_ZONE_INDICES = [111, 117, 119, 120, 121, 128, 122, 6, 351, 357, 350, 3
 IMG_SIZE = (256, 256)
 face_padding = 50
 cap = None
+alpha = 0.5
 
 # For supporting HEIC image format
 pillow_heif.register_heif_opener()
-
-print("Succesfully entered the analyzer file")
-
-def load_and_convert_image(image_input):
-    """
-    Converts image_input into an OpenCV-compatible BGR NumPy array.
-    Accepts:
-        - File path (str, including .jpg, .png, .heic, etc.)
-        - PIL.Image.Image
-        - NumPy array
-    Returns:
-        - BGR NumPy array (OpenCV style)
-    """
-
-    if isinstance(image_input, str):
-        try:
-            try:
-                image = Image.open(io.BytesIO(contents)).convert("RGB")
-                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            except Exception as e:
-                logger.error(f"Failed to open image: {e}")
-                return jsonify({"error": "Unsupported or corrupt image file."}), 400
-        except Exception as e:
-            raise ValueError(f"Failed to load image from path '{image_input}': {e}")
-
-    elif isinstance(image_input, Image.Image):
-        return cv2.cvtColor(np.array(image_input.convert("RGB")), cv2.COLOR_RGB2BGR)
-
-    elif isinstance(image_input, np.ndarray):
-        if image_input.ndim == 2:
-            return cv2.cvtColor(image_input, cv2.COLOR_GRAY2BGR)
-        elif image_input.shape[2] == 3:
-            return image_input  # Already BGR
-        elif image_input.shape[2] == 4:
-            return cv2.cvtColor(image_input, cv2.COLOR_BGRA2BGR)
-        else:
-            raise ValueError("Unsupported image array format.")
-
-    else:
-        raise TypeError("Unsupported image input. Provide file path, PIL.Image, or NumPy array.")
-
-    
 
 print("Succesfully entered the analyzer file")
 
@@ -336,6 +295,99 @@ def update_frame(image):
             # qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             # video_label.setPixmap(QPixmap.fromImage(qt_image))
 
+# === Overlay Functions ===
+def overlay_pores_mask_on_original(original_image, pred_mask, bbox, threshold=0.1, alpha = 0.5, mask_color=(255, 0, 255)):
+    """
+    Safely overlays a predicted mask onto the original image using a bounding box.
+
+    Args:
+        original_image: The full, original image.
+        pred_mask: The prediction mask from the model (for the cropped region).
+        bbox: The (x_min, y_min, x_max, y_max) bounding box for the crop.
+        threshold: The value to binarize the mask (0-1).
+        alpha: The transparency of the overlay.
+        mask_color: The (B, G, R) color for the mask.
+
+    Returns:
+        The image with the mask overlaid.
+    """
+    # Create a copy of the original image to draw on
+    overlay_img = original_image.copy()
+
+    # 1. Binarize the predicted mask
+    mask_bin = (pred_mask > threshold).astype(np.uint8) * 255
+
+    # 2. Handle the "no pores detected" edge case
+    if np.sum(mask_bin) == 0:
+        return original_image  # Nothing to overlay, return the original
+
+    # 3. Get coordinates and dimensions from the bounding box
+    x_min, y_min, x_max, y_max = bbox
+    h_bbox, w_bbox = y_max - y_min, x_max - x_min
+
+    # 4. Handle invalid bounding box
+    if h_bbox <= 0 or w_bbox <= 0:
+        return original_image
+
+    # 5. Resize the mask to the size of the bounding box
+    mask_resized = cv2.resize(mask_bin, (w_bbox, h_bbox), interpolation=cv2.INTER_NEAREST)
+
+    # 6. Create a solid color mask for blending
+    color_mask = np.zeros((h_bbox, w_bbox, 3), dtype=np.uint8)
+    color_mask[mask_resized > 0] = mask_color
+
+    # 7. Extract the Region of Interest (ROI) from the image
+    roi = overlay_img[y_min:y_max, x_min:x_max]
+
+    # 8. Blend the color mask with the ROI
+    blended_roi = cv2.addWeighted(roi, 1.0, color_mask, alpha, 0)
+
+    # 9. Place the blended ROI back into the main image
+    overlay_img[y_min:y_max, x_min:x_max] = blended_roi
+
+    return overlay_img
+
+def overlay_wrinkle_mask_on_image(image, mask, alpha = 0.5, mask_color=(255, 0, 0)):
+    """
+    Overlays a predicted mask on an image.
+
+    Parameters:
+    - image: original image, shape (H, W, 3), float32 [0–1] or uint8 [0–255]
+    - mask: predicted mask, shape (H, W) or (H, W, 1), float32 [0–1] or uint8
+    - alpha: transparency factor for mask overlay
+    - mask_color: BGR color for the overlay (default is blue)
+
+    Returns:
+    - overlayed image (uint8)
+    """
+    # Convert image to uint8
+    if image.dtype != np.uint8:
+        image = (image * 255).astype(np.uint8)
+
+    # Ensure mask is 2D
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+
+    # Resize mask to match image if needed
+    if mask.shape != image.shape[:2]:
+        mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
+
+    # Normalize mask to [0, 255] and convert to uint8
+    if mask.max() <= 1.0:
+        mask = (mask * 255).astype(np.uint8)
+    else:
+        mask = mask.astype(np.uint8)
+
+    # Create a color version of the mask
+    color_mask = np.zeros_like(image)
+    color_mask[:, :] = mask_color  # e.g., blue mask
+    color_mask = cv2.bitwise_and(color_mask, color_mask, mask=mask)
+
+    # Overlay
+    overlayed = cv2.addWeighted(image, 1.0, color_mask, alpha, 0)
+
+    return overlayed
+
 def different_zones(image, landmarks):
         """ Generate segmented facial region masks and segments for left/right eyes """
         
@@ -436,14 +488,22 @@ def analyze_wrinkles(image):
         score = wrinkle_score(binary_mask)
         age = wrinkle_score_to_age(score)
         
+        # Create wrinkle overlay
+        wrinkle_overlay = overlay_wrinkle_mask_on_image(
+            image, 
+            binary_mask,
+            alpha=0.5,
+            mask_color=(0, 0, 255)  # Yellow for wrinkles
+        )
+        
         print("Leaving the wrinkle analyze to age function")
         logger.info(f"Analyzer.py: Wrinkle score: {score}")
         logger.info(f"Analyzer.py: Skin age: {age}")
-        return score, age
+        return score, age, binary_mask, wrinkle_overlay
 
     except Exception as e:
         print(f"Error in wrinkle analysis: {str(e)}")
-        return "No face Detected."
+        return "No face Detected.", None, None, None
 
 def detect_skin_tone(image):
         print("Entering the detect skin tone function")
@@ -642,11 +702,28 @@ def detect_dark_circles_otsu(image):
         kernel = np.ones((3, 3), np.uint8)
         combined_dark_circle_mask_full_size = cv2.morphologyEx(combined_dark_circle_mask_full_size, cv2.MORPH_OPEN, kernel) # Opening to remove small objects
 
+        # --- Erode the mask to remove border artifacts ---
+        kernel_erode = np.ones((3, 3), np.uint8)  # Try (3,3) or (5,5)
+        combined_dark_circle_mask = cv2.erode(combined_dark_circle_mask_full_size, kernel_erode, iterations=1)
+
         # --- Calculate Dark Circle Score ---
         # A simple score can be based on the proportion of detected dark circle pixels
         # within the total eye region area.
         total_eye_region_mask = cv2.bitwise_or(left_eye_mask_full, right_eye_mask_full) # Combine the original eye region masks
         total_eye_pixel_count = np.sum(total_eye_region_mask > 0) # Count non-zero pixels in the eye region mask
+
+        # After you create total_eye_region_mask
+        kernel_inner = np.ones((5, 5), np.uint8)  # Try (7,7) or (9,9) for a strong shrink
+        inner_eye_mask = cv2.erode(total_eye_region_mask, kernel_inner, iterations=1)
+
+        # Create a boolean mask for dark pixels within the eye region
+        dark_pixels_mask = (combined_dark_circle_mask == 0) & (inner_eye_mask > 0)
+
+        #Creating the overlay on original image
+        overlay = np.zeros_like(original_image, dtype=np.uint8)
+        # Set red color [B, G, R] = [0, 0, 255] where dark_pixels_mask is True
+        overlay[dark_pixels_mask] = [0, 0, 255]
+
 
         dark_circle_pixel_count = np.sum(combined_dark_circle_mask_full_size > 0) # Count non-zero pixels in the dark circle mask
 
@@ -661,7 +738,7 @@ def detect_dark_circles_otsu(image):
         print("exiting the dark circle function")
         logger.info(f"Analyzer.py: Dark circle score: {dark_circle_score}")
 
-        return original_image, combined_dark_circle_mask_full_size, dark_circle_score
+        return original_image, combined_dark_circle_mask_full_size, dark_circle_score, dark_pixels_mask
 
 def crop_to_butterfly_zone(image, landmarks, indices):
     h, w = image.shape[:2]
@@ -691,6 +768,7 @@ def calculate_pores_score(pred_mask, threshold=0.2):
 
 def analyze_pores(image):
     #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    original_image = image.copy()
     landmark = detect_landmarks(image)
     cropped_img, bbox = crop_to_butterfly_zone(image, landmark.landmark, BUTTERFLY_ZONE_INDICES)
     img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
@@ -731,8 +809,17 @@ def analyze_pores(image):
     cv2.imwrite(mask_path, pred_to_save)
     print(f"Saved pore mask to: {mask_path}")
     logger.info(f"Analyzer.py: Pores score: {pores_score}")
+    
+    # Create pores overlay
+    pores_overlay = overlay_pores_mask_on_original(
+        original_image,
+        pred, 
+        bbox,
+        alpha=0.5,
+        mask_color=(255, 0, 255)  # Magenta for pores
+    )
 
-    return pred, cropped_img, bbox, pores_score
+    return cropped_img, bbox, pores_score, pores_overlay
 
 # if __name__ == "__main__":
 #     image = cv2.imread("/Users/kavyashah/Desktop/Nofilter_Backup/CB/MVP-v01/Wrinkles-Detection/1751225360748.jpeg")
