@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from PIL import Image
@@ -94,7 +94,7 @@ def analyze_image_np(image) -> dict:
         # logger.info(f"Skin tone: {skin_tone}")
 
         logger.debug("Calling analyze_wrinkles()")
-        wrinkle_score, skin_age = analyze_wrinkles(image)
+        wrinkle_score, skin_age, _, _ = analyze_wrinkles(image)
         # logger.info(f"Wrinkle score: {wrinkle_score}")
         # logger.info(f"Skin age: {skin_age}")
 
@@ -112,7 +112,7 @@ def analyze_image_np(image) -> dict:
             "wrinkle_score": wrinkle_score,
             "skin_age": skin_age,
             "dark_circle_score": dark_circle_score[2],
-            "pores_score": pores_score[3],  # Assuming third item is score
+            "pores_score": pores_score[2],  # Assuming third item is score
             "timestamp": timestamp
         }
         logger.info(f"Analysis result: {result}")
@@ -123,7 +123,6 @@ def analyze_image_np(image) -> dict:
         logger.error("Error during image analysis")
         logger.error(traceback.format_exc())
         raise
-
 
 @app.post("/analyze-photo/")
 async def analyze_photo(file: UploadFile = File(...)):
@@ -151,6 +150,22 @@ async def analyze_photo(file: UploadFile = File(...)):
             status_code=500,
             content={"status": "error", "message": str(e), "traceback": tb}
         )
+
+@app.post("/overlay-photo/")
+async def overlay_photo(file: UploadFile = File(...), overlay_type: str = "wrinkle"):
+    contents = await file.read()
+    cv_img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+    if overlay_type == "wrinkle":
+        _, _, _, overlay = analyze_wrinkles(cv_img)
+    elif overlay_type == "pores":
+        _, _, _, overlay = analyze_pores(cv_img)
+    elif overlay_type == "dark_circles":
+        _, _, _, overlay = detect_dark_circles_otsu(cv_img)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid overlay type")
+    _, buffer = cv2.imencode('.png', overlay)
+    io_buf = io.BytesIO(buffer)
+    return StreamingResponse(io_buf, media_type="image/png")
 
 @app.get("/job-status/{job_id}")
 async def get_job_status(job_id: str):
