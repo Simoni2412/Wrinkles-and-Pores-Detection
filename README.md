@@ -1,4 +1,4 @@
-# Wrinkles-Detection
+# Wrinkles-and-Pores-Detection
 Implementing the paper https://www.mdpi.com/2075-4418/13/11/1894
 
 
@@ -22,8 +22,7 @@ Here’s an updated data flow integrating the possible improvements:
 # 4. Feature Extraction & Model Processing
     Pass masked images through Reduced U-Net with Attention module
     Integrate Gaussian filtering for noise reduction
-    Apply edge detection techniques (Canny, Sobel) to enhance wrinkle contours
-
+    
 # 5. Wrinkle Scoring Algorithm
     Define wrinkle intensity metrics (contrast, depth, density)
     Compute wrinkle score using statistical and deep learning approaches
