@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from PIL import Image
 import numpy as np
 import cv2
 import io
@@ -12,13 +11,25 @@ import logging
 import traceback
 import os
 
+# === Output Directory Setup ===
+base_output_dir = "Output"
+wrinkle_output_dir = os.path.join(base_output_dir, "predicted_wrinkle_masks")
+pore_output_dir = os.path.join(base_output_dir, "predicted_pore_masks")
+dark_circle_dir = os.path.join(base_output_dir, "predicted_dark_circle_masks")
+
+# Create directories if they don't exist
+os.makedirs(wrinkle_output_dir, exist_ok=True)
+os.makedirs(pore_output_dir, exist_ok=True)
+os.makedirs(dark_circle_dir, exist_ok=True)
+
 # Your analyzer functions
 from analyzer import (
     analyze_skin_type_patches,
     detect_skin_tone,
     analyze_wrinkles,
     detect_dark_circles_otsu,
-    analyze_pores
+    analyze_pores,
+    overlay_mask
 )
 
 app = FastAPI()
@@ -94,7 +105,7 @@ def analyze_image_np(image) -> dict:
         # logger.info(f"Skin tone: {skin_tone}")
 
         logger.debug("Calling analyze_wrinkles()")
-        wrinkle_score, skin_age, _, _ = analyze_wrinkles(image)
+        wrinkle_score, skin_age, binary_mask = analyze_wrinkles(image)
         # logger.info(f"Wrinkle score: {wrinkle_score}")
         # logger.info(f"Skin age: {skin_age}")
 
@@ -157,17 +168,40 @@ async def analyze_photo(file: UploadFile = File(...)):
 async def overlay_photo(file: UploadFile = File(...), overlay_type: str = "wrinkle"):
     contents = await file.read()
     cv_img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+
+    filename = file.filename
+    filename_wo_ext = os.path.splitext(os.path.basename(filename))[0]
+
+    # Choose overlay mask path
     if overlay_type == "wrinkle":
-        _, _, _, overlay = analyze_wrinkles(cv_img)
+        overlay_path = os.path.join(wrinkle_output_dir, f"wrinkle_mask_{filename_wo_ext}.png")
+        overlay_color = (0, 0, 255)  # Red
     elif overlay_type == "pores":
-        _, _, _, overlay = analyze_pores(cv_img)
+        overlay_path = os.path.join(pore_output_dir, f"pores_mask_{filename_wo_ext}.png")
+        overlay_color = (255, 0, 255)  # Magenta
     elif overlay_type == "dark_circles":
-        _, _, _, overlay = detect_dark_circles_otsu(cv_img)
+        overlay_path = os.path.join(dark_circle_dir, f"darkcircles_mask_{filename_wo_ext}.png")
+        overlay_color = (0, 255, 255)  # Yellowish
     else:
         raise HTTPException(status_code=400, detail="Invalid overlay type")
-    _, buffer = cv2.imencode('.png', overlay)
-    io_buf = io.BytesIO(buffer)
-    return StreamingResponse(io_buf, media_type="image/png")
+
+    # Check if mask exists
+    if not os.path.exists(overlay_path):
+        raise HTTPException(status_code=404, detail="Overlay not found. Analyze first.")
+
+    # Load the binary mask
+    mask = cv2.imread(overlay_path, cv2.IMREAD_GRAYSCALE)  # Binary mask
+
+    # Apply overlay
+    overlayed_img = overlay_mask(cv_img, mask, color=overlay_color, alpha=0.5)
+
+    # Encode overlayed image to PNG
+    success, buffer = cv2.imencode(".png", overlayed_img)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to encode overlay image.")
+
+    return StreamingResponse(io.BytesIO(buffer.tobytes()), media_type="image/png")
+
 
 @app.get("/job-status/{job_id}")
 async def get_job_status(job_id: str):

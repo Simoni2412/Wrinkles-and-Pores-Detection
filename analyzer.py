@@ -2,17 +2,14 @@ from PIL import Image
 import pillow_heif
 import numpy as np
 import cv2
-import random
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import layers
 #import matplotlib.pyplot as plt
 import os
-import sys
-import io
 from datetime import datetime
-import uuid 
+import uuid
 
 
 import logging
@@ -127,6 +124,7 @@ IMG_SIZE = (256, 256)
 face_padding = 50
 cap = None
 alpha = 0.5
+unique_id = str(uuid.uuid4())[:2]  # Optional: shorten UUID
 
 # For supporting HEIC image format
 pillow_heif.register_heif_opener()
@@ -295,98 +293,113 @@ def update_frame(image):
             # qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             # video_label.setPixmap(QPixmap.fromImage(qt_image))
 
-# === Overlay Functions ===
-def overlay_pores_mask_on_original(original_image, pred_mask, bbox, threshold=0.1, alpha = 0.5, mask_color=(255, 0, 255)):
-    """
-    Safely overlays a predicted mask onto the original image using a bounding box.
-
-    Args:
-        original_image: The full, original image.
-        pred_mask: The prediction mask from the model (for the cropped region).
-        bbox: The (x_min, y_min, x_max, y_max) bounding box for the crop.
-        threshold: The value to binarize the mask (0-1).
-        alpha: The transparency of the overlay.
-        mask_color: The (B, G, R) color for the mask.
-
-    Returns:
-        The image with the mask overlaid.
-    """
-    # Create a copy of the original image to draw on
-    overlay_img = original_image.copy()
-
-    # 1. Binarize the predicted mask
-    mask_bin = (pred_mask > threshold).astype(np.uint8) * 255
-
-    # 2. Handle the "no pores detected" edge case
-    if np.sum(mask_bin) == 0:
-        return original_image  # Nothing to overlay, return the original
-
-    # 3. Get coordinates and dimensions from the bounding box
-    x_min, y_min, x_max, y_max = bbox
-    h_bbox, w_bbox = y_max - y_min, x_max - x_min
-
-    # 4. Handle invalid bounding box
-    if h_bbox <= 0 or w_bbox <= 0:
-        return original_image
-
-    # 5. Resize the mask to the size of the bounding box
-    mask_resized = cv2.resize(mask_bin, (w_bbox, h_bbox), interpolation=cv2.INTER_NEAREST)
-
-    # 6. Create a solid color mask for blending
-    color_mask = np.zeros((h_bbox, w_bbox, 3), dtype=np.uint8)
-    color_mask[mask_resized > 0] = mask_color
-
-    # 7. Extract the Region of Interest (ROI) from the image
-    roi = overlay_img[y_min:y_max, x_min:x_max]
-
-    # 8. Blend the color mask with the ROI
-    blended_roi = cv2.addWeighted(roi, 1.0, color_mask, alpha, 0)
-
-    # 9. Place the blended ROI back into the main image
-    overlay_img[y_min:y_max, x_min:x_max] = blended_roi
-
-    return overlay_img
-
-def overlay_wrinkle_mask_on_image(image, mask, alpha = 0.5, mask_color=(255, 0, 0)):
-    """
-    Overlays a predicted mask on an image.
-
-    Parameters:
-    - image: original image, shape (H, W, 3), float32 [0–1] or uint8 [0–255]
-    - mask: predicted mask, shape (H, W) or (H, W, 1), float32 [0–1] or uint8
-    - alpha: transparency factor for mask overlay
-    - mask_color: BGR color for the overlay (default is blue)
-
-    Returns:
-    - overlayed image (uint8)
-    """
-    # Convert image to uint8
-    if image.dtype != np.uint8:
-        image = (image * 255).astype(np.uint8)
-
-    # Ensure mask is 2D
+def overlay_mask(image, mask, color=(0, 0, 255), alpha=0.5):
+    """Overlay binary mask on image with color and transparency."""
     if mask.ndim == 3:
         mask = mask[:, :, 0]
-
-    # Resize mask to match image if needed
-    if mask.shape != image.shape[:2]:
-        mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
-
-    # Normalize mask to [0, 255] and convert to uint8
-    if mask.max() <= 1.0:
+    if mask.max() <= 1:
         mask = (mask * 255).astype(np.uint8)
     else:
         mask = mask.astype(np.uint8)
 
-    # Create a color version of the mask
     color_mask = np.zeros_like(image)
-    color_mask[:, :] = mask_color  # e.g., blue mask
-    color_mask = cv2.bitwise_and(color_mask, color_mask, mask=mask)
+    color_mask[mask > 0] = color  # e.g. red overlay
 
-    # Overlay
-    overlayed = cv2.addWeighted(image, 1.0, color_mask, alpha, 0)
+    return cv2.addWeighted(image, 1 - alpha, color_mask, alpha, 0)
 
-    return overlayed
+
+# # === Overlay Functions ===
+# def overlay_pores_mask_on_original(original_image, pred_mask, bbox, threshold=0.1, alpha = 0.5, mask_color=(255, 0, 255)):
+#     """
+#     Safely overlays a predicted mask onto the original image using a bounding box.
+#
+#     Args:
+#         original_image: The full, original image.
+#         pred_mask: The prediction mask from the model (for the cropped region).
+#         bbox: The (x_min, y_min, x_max, y_max) bounding box for the crop.
+#         threshold: The value to binarize the mask (0-1).
+#         alpha: The transparency of the overlay.
+#         mask_color: The (B, G, R) color for the mask.
+#
+#     Returns:
+#         The image with the mask overlaid.
+#     """
+#     # Create a copy of the original image to draw on
+#     overlay_img = original_image.copy()
+#
+#     # 1. Binarize the predicted mask
+#     mask_bin = (pred_mask > threshold).astype(np.uint8) * 255
+#
+#     # 2. Handle the "no pores detected" edge case
+#     if np.sum(mask_bin) == 0:
+#         return original_image  # Nothing to overlay, return the original
+#
+#     # 3. Get coordinates and dimensions from the bounding box
+#     x_min, y_min, x_max, y_max = bbox
+#     h_bbox, w_bbox = y_max - y_min, x_max - x_min
+#
+#     # 4. Handle invalid bounding box
+#     if h_bbox <= 0 or w_bbox <= 0:
+#         return original_image
+#
+#     # 5. Resize the mask to the size of the bounding box
+#     mask_resized = cv2.resize(mask_bin, (w_bbox, h_bbox), interpolation=cv2.INTER_NEAREST)
+#
+#     # 6. Create a solid color mask for blending
+#     color_mask = np.zeros((h_bbox, w_bbox, 3), dtype=np.uint8)
+#     color_mask[mask_resized > 0] = mask_color
+#
+#     # 7. Extract the Region of Interest (ROI) from the image
+#     roi = overlay_img[y_min:y_max, x_min:x_max]
+#
+#     # 8. Blend the color mask with the ROI
+#     blended_roi = cv2.addWeighted(roi, 1.0, color_mask, alpha, 0)
+#
+#     # 9. Place the blended ROI back into the main image
+#     overlay_img[y_min:y_max, x_min:x_max] = blended_roi
+#
+#     return overlay_img
+#
+# def overlay_wrinkle_mask_on_image(image, mask, alpha = 0.5, mask_color=(255, 0, 0)):
+#     """
+#     Overlays a predicted mask on an image.
+#
+#     Parameters:
+#     - image: original image, shape (H, W, 3), float32 [0–1] or uint8 [0–255]
+#     - mask: predicted mask, shape (H, W) or (H, W, 1), float32 [0–1] or uint8
+#     - alpha: transparency factor for mask overlay
+#     - mask_color: BGR color for the overlay (default is blue)
+#
+#     Returns:
+#     - overlayed image (uint8)
+#     """
+#     # Convert image to uint8
+#     if image.dtype != np.uint8:
+#         image = (image * 255).astype(np.uint8)
+#
+#     # Ensure mask is 2D
+#     if mask.ndim == 3:
+#         mask = mask[:, :, 0]
+#
+#     # Resize mask to match image if needed
+#     if mask.shape != image.shape[:2]:
+#         mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
+#
+#     # Normalize mask to [0, 255] and convert to uint8
+#     if mask.max() <= 1.0:
+#         mask = (mask * 255).astype(np.uint8)
+#     else:
+#         mask = mask.astype(np.uint8)
+#
+#     # Create a color version of the mask
+#     color_mask = np.zeros_like(image)
+#     color_mask[:, :] = mask_color  # e.g., blue mask
+#     color_mask = cv2.bitwise_and(color_mask, color_mask, mask=mask)
+#
+#     # Overlay
+#     overlayed = cv2.addWeighted(image, 1.0, color_mask, alpha, 0)
+#
+#     return overlayed
 
 def different_zones(image, landmarks):
         """ Generate segmented facial region masks and segments for left/right eyes """
@@ -462,44 +475,33 @@ def analyze_wrinkles(image):
         else:
             predicted_mask = predicted_mask[0]
         
-        binary_mask = (predicted_mask > 0.5).astype(np.uint8)
+        binary_mask = (predicted_mask > 0.5).astype(np.uint8) * 255
 
         # if predicted_mask.dtype != np.uint8:
         #     predicted_mask = (predicted_mask * 255).astype(np.uint8)
 
-        # Derive filename from input image
-        if isinstance(image, str):
-            filename_wo_ext = os.path.splitext(os.path.basename(image))[0]
-        else:
-            filename_wo_ext = f"uploaded_image_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        mask_filename = f"{filename_wo_ext}_mask.png"
+        filename_wo_ext = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
+        mask_filename = f"wrinkle_mask_{filename_wo_ext}.png"
         mask_path = os.path.join(output_dir, mask_filename)
 
-        # Optional: check if file exists, append timestamp if it does (prevent overwrite)
-        if os.path.exists(mask_path):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            mask_filename = f"{filename_wo_ext}_mask_{timestamp}.png"
-            mask_path = os.path.join(output_dir, mask_filename)
-
-        cv2.imwrite(mask_path, predicted_mask)
+        cv2.imwrite(mask_path, binary_mask)
         print(f"Saved wrinkle mask to: {mask_path}")
 
-        score = wrinkle_score(binary_mask)
+        score = wrinkle_score(predicted_mask)
         age = wrinkle_score_to_age(score)
         
-        # Create wrinkle overlay
-        wrinkle_overlay = overlay_wrinkle_mask_on_image(
-            image, 
-            binary_mask,
-            alpha=0.5,
-            mask_color=(0, 0, 255)  # Yellow for wrinkles
-        )
-        
+        # # Create wrinkle overlay
+        # wrinkle_overlay = overlay_wrinkle_mask_on_image(
+        #     image,
+        #     binary_mask,
+        #     alpha=0.5,
+        #     mask_color=(0, 0, 255)  # Yellow for wrinkles
+        # )
+        #
         print("Leaving the wrinkle analyze to age function")
         logger.info(f"Analyzer.py: Wrinkle score: {score}")
         logger.info(f"Analyzer.py: Skin age: {age}")
-        return score, age, binary_mask, wrinkle_overlay
+        return score, age, binary_mask
 
     except Exception as e:
         print(f"Error in wrinkle analysis: {str(e)}")
@@ -572,7 +574,12 @@ def analyze_skin_type_patches(image):
                         continue
                     patch_preprocessed = tf.keras.applications.efficientnet_v2.preprocess_input(patch)
                     patch_preprocessed = np.expand_dims(patch_preprocessed, axis=0)
-                    pred = skin_type_model.predict(patch_preprocessed, verbose=0)
+                    try:
+                        pred = skin_type_model.predict(patch_preprocessed, verbose=0)
+                    except Exception as e:
+                        logger.error(f"Model prediction failed: {e}")
+                        continue
+                    # pred = skin_type_model.predict(patch_preprocessed, verbose=0)
                     pred_class = np.argmax(pred)
                     patch_predictions.append(pred_class)
 
@@ -629,15 +636,15 @@ def detect_dark_circles_otsu(image):
         rgb_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
         h_orig, w_orig = original_image.shape[:2]
 
-        # --- Initialize and use FaceMesh directly within this function ---
-        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
-            results = face_mesh.process(rgb_image)
+        # # --- Initialize and use FaceMesh directly within this function ---
+        # with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
+        #     results = face_mesh.process(rgb_image)
+        #
+        # if not results.multi_face_landmarks:
+        #     print(f"No face detected in {image}.")
+        #     return original_image, np.zeros((h_orig, w_orig), dtype=np.uint8), 0.0 # Return original image and empty mask
 
-        if not results.multi_face_landmarks:
-            print(f"No face detected in {image}.")
-            return original_image, np.zeros((h_orig, w_orig), dtype=np.uint8), 0.0 # Return original image and empty mask
-
-        landmarks = results.multi_face_landmarks[0]
+        landmarks = detect_landmarks(rgb_image)
 
         # Get segmented eye regions (same size as original image) and the masks
         left_segment, right_segment, left_eye_mask_full, right_eye_mask_full = different_zones(original_image, landmarks)
@@ -731,6 +738,24 @@ def detect_dark_circles_otsu(image):
         if total_eye_pixel_count > 0:
             dark_circle_score = int((dark_circle_pixel_count / total_eye_pixel_count) * 100) # Score as percentage of eye area
 
+        output_dir = 'output/predicted_dark_circle_masks'
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Convert mask to uint8 if needed
+        if dark_pixels_mask.dtype != np.uint8:
+            dark_pixels_mask_to_save = (dark_pixels_mask.astype(np.uint8)) * 255  # Convert boolean to 0-255
+        else:
+            dark_pixels_mask_to_save = dark_pixels_mask
+
+        # Inside analyze_wrinkles or wherever you're saving the mask:
+        filename_wo_ext = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
+        mask_filename = f"darkcircles_mask_{filename_wo_ext}.png"
+        mask_path = os.path.join(output_dir, mask_filename)
+
+        # Save the mask using OpenCV
+        cv2.imwrite(mask_path, dark_pixels_mask_to_save)
+        print(f"Dark circle mask saved to: {mask_path}")
+
         # You could refine the score calculation, e.g., consider intensity within the dark circle mask on the original image.
         # E.g., mean_intensity_in_dark_circles = cv2.mean(original_image, mask=combined_dark_circle_mask_full_size)
         # A lower intensity might indicate more severe dark circles. You could incorporate this.
@@ -796,30 +821,32 @@ def analyze_pores(image):
     output_dir = 'output/predicted_pore_masks'
     os.makedirs(output_dir, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    unique_id = str(uuid.uuid4())[:8]  # Optional: shorten UUID
-    mask_filename = f"pore_mask_{timestamp}_{unique_id}.png"
+    # Inside analyze_wrinkles or wherever you're saving the mask:
+    filename_wo_ext = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
+    mask_filename = f"pores_mask_{filename_wo_ext}.png"
     mask_path = os.path.join(output_dir, mask_filename)
+
     # Convert mask to uint8 if needed
     if pred.dtype != np.uint8:
         pred_to_save = (pred * 255).astype(np.uint8)
     else:
         pred_to_save = pred
 
+
     cv2.imwrite(mask_path, pred_to_save)
     print(f"Saved pore mask to: {mask_path}")
     logger.info(f"Analyzer.py: Pores score: {pores_score}")
     
-    # Create pores overlay
-    pores_overlay = overlay_pores_mask_on_original(
-        original_image,
-        pred, 
-        bbox,
-        alpha=0.5,
-        mask_color=(255, 0, 255)  # Magenta for pores
-    )
+    # # Create pores overlay
+    # pores_overlay = overlay_pores_mask_on_original(
+    #     original_image,
+    #     pred,
+    #     bbox,
+    #     alpha=0.5,
+    #     mask_color=(255, 0, 255)  # Magenta for pores
+    # )
 
-    return cropped_img, bbox, pores_score, pores_overlay
+    return cropped_img, bbox, pores_score
 
 # if __name__ == "__main__":
 #     image = cv2.imread("/Users/kavyashah/Desktop/Nofilter_Backup/CB/MVP-v01/Wrinkles-Detection/1751225360748.jpeg")
