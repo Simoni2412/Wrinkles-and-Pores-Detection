@@ -6,7 +6,6 @@ import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import layers
-#import matplotlib.pyplot as plt
 import os
 from datetime import datetime
 import uuid

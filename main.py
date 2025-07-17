@@ -135,8 +135,6 @@ def analyze_image_np(image) -> dict:
         logger.error(traceback.format_exc())
         raise
 
-
-
 @app.post("/analyze-photo/")
 async def analyze_photo(file: UploadFile = File(...)):
     try:
